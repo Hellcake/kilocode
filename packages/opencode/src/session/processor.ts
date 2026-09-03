@@ -24,6 +24,7 @@ import { Question } from "@/question"
 // kilocode_change start
 import { KiloSessionProcessor, type ReviewTelemetry } from "@/kilocode/session/processor"
 import { PermissionProvenance } from "@/kilocode/permission/provenance" // kilocode_change
+import { SecurityBlocked } from "@/kilocode/security-decision/block" // kilocode_change
 import { KiloSessionOverflow } from "@/kilocode/session/overflow"
 import { KiloRoutedModel } from "@/kilocode/session/routed-model"
 import { KiloResponseMetadata } from "@/kilocode/session/response-metadata"
@@ -306,7 +307,10 @@ const layer = Layer.effect(
           },
         })
         // kilocode_change start
-        if (
+        if (SecurityBlocked.is(error)) {
+          // A deterministic security block always ends the turn, even with continue_loop_on_deny.
+          ctx.blocked = true
+        } else if (
           error instanceof PermissionV1.RejectedError ||
           error instanceof Question.RejectedError ||
           error instanceof Suggestion.DismissedError

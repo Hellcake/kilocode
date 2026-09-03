@@ -22,6 +22,7 @@ import { normalizeUrls } from "@/kilocode/util/url" // kilocode_change
 import { CommandTimeout } from "@/kilocode/command-timeout" // kilocode_change
 import { heredocs } from "@/kilocode/tool/shell-heredoc" // kilocode_change
 import { unparsed } from "@/kilocode/tool/shell-unparsed" // kilocode_change
+import { securityFacts } from "@/kilocode/tool/shell-security-facts" // kilocode_change
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
@@ -287,7 +288,7 @@ const ask = Effect.fn("ShellTool.ask")(function* (
   ctx: Tool.Context,
   scan: Scan,
   command: string,
-  metadata: ReturnType<typeof heredocs>, // kilocode_change
+  metadata: ReturnType<typeof heredocs> & { securityFacts?: ReturnType<typeof securityFacts> }, // kilocode_change
   description?: string, // kilocode_change
 ) {
   // kilocode_change
@@ -427,13 +428,19 @@ export const ShellPermission = Effect.gen(function* () {
       Effect.gen(function* () {
         const tree = yield* Effect.acquireRelease(parse(input.command, ps), (tree) => Effect.sync(() => tree.delete()))
         const scan = yield* collect(tree.rootNode, input.cwd, ps, input.shell, instance)
-        const metadata = heredocs(tree.rootNode, ShellID.toKind(Shell.name(input.shell))) // kilocode_change
+        // kilocode_change start - reuse this scan's AST facts for the security decision layer
+        const nodes = commands(tree.rootNode)
+        const metadata = {
+          ...heredocs(tree.rootNode, ShellID.toKind(Shell.name(input.shell))),
+          securityFacts: securityFacts(tree.rootNode, unparsed(tree.rootNode, nodes.length).length, nodes),
+        }
+        // kilocode_change end
         if (!containsPath(input.cwd, instance)) {
           scan.dirs.add(input.cwd)
           scan.access = "unknown"
         }
         yield* ask(ctx, scan, input.command, metadata, input.description) // kilocode_change
-        const gitMutation = commands(tree.rootNode).some((node) => mutatesGit(node.text))
+        const gitMutation = nodes.some((node) => mutatesGit(node.text)) // kilocode_change - reuse the scan above
         if (input.escalate && gitMutation) {
           yield* ctx.ask({
             permission: "sandbox_escalation", // kilocode_change

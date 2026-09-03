@@ -19,6 +19,10 @@ import { drainCovered } from "@/kilocode/permission/drain"
 import { ReadPermission } from "@/kilocode/permission/read"
 import { AgentManagerPermission } from "@/kilocode/permission/agent-manager" // kilocode_change
 import { ExternalDirectoryPermission } from "@/kilocode/permission/external-directory"
+import { KiloSecurityGate } from "@/kilocode/security-decision/gate"
+import { SecurityBlocked } from "@/kilocode/security-decision/block"
+import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
+import type { SecurityDecisionTypes } from "@/kilocode/security-decision/types"
 // kilocode_change end
 
 export const Event = PermissionV1.Event
@@ -42,11 +46,20 @@ export const DeniedError = PermissionV1.DeniedError
 export type DeniedError = PermissionV1.DeniedError
 export const NotFoundError = PermissionV1.NotFoundError
 export type NotFoundError = PermissionV1.NotFoundError
-export type Error = PermissionV1.Error
+export type Error = PermissionV1.Error | SecurityBlocked.Error // kilocode_change - typed security block
 export const ReplyInput = PermissionV1.ReplyInput
 export type ReplyInput = PermissionV1.ReplyInput
 // Kilo extends upstream's AskInput with an optional hardRuleset (consumed by drain + session/prompt)
-export type AskInput = PermissionV1.AskInput & { hardRuleset?: PermissionV1.Ruleset }
+export type AskInput = PermissionV1.AskInput & {
+  hardRuleset?: PermissionV1.Ruleset
+  /** Live containment facts for the security decision layer; never published to clients. */
+  containment?: SecurityDecisionTypes.Containment
+  /**
+   * Sink for the security layer's audit record. Called with the *initial* record before the call is
+   * auto-approved or published as an ask, so a rejected or abandoned ask is still audited.
+   */
+  audit?: (record: SecurityDecisionAdapter.Audit) => Effect.Effect<void>
+}
 // kilocode_change end
 
 // kilocode_change start
@@ -69,6 +82,8 @@ export interface AskOutcome {
   manual: boolean
   /** The winning rule (carries an optional `source` marker set at ruleset-build time). */
   rule?: Rule
+  /** Audit record of the deterministic security layer, when the feature flag is on. */
+  security?: SecurityDecisionAdapter.Audit
 }
 // kilocode_change end
 
@@ -187,7 +202,7 @@ const layer = Layer.effect(
     const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
       const { approved, pending } = yield* InstanceState.get(state)
       // kilocode_change start
-      const { ruleset, hardRuleset, ...request } = input
+      const { ruleset, hardRuleset, containment, audit, ...request } = input
       const s = yield* InstanceState.get(state)
       const local = s.session[request.sessionID] ?? []
       // kilocode_change end
@@ -214,8 +229,10 @@ const layer = Layer.effect(
       // kilocode_change end
 
       const forceAsk = request.metadata?.["skillShell"] === true || request.metadata?.["sandboxEscalation"] === true // kilocode_change
+      const resolved: KiloSecurityGate.Resolved[] = [] // kilocode_change - fed to the security decision layer below
       for (const pattern of request.patterns) {
         const rule = resolve(request.permission, pattern, ruleset, approved, local) // kilocode_change — include session-scoped rules
+        resolved.push({ pattern, action: rule.action }) // kilocode_change
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         // kilocode_change start — saved/session approvals cannot override hard Ask/Plan denials
         if (veto(request.permission, pattern, hardRuleset)) {
@@ -241,10 +258,61 @@ const layer = Layer.effect(
         needsAsk = true
       }
 
-      if (!needsAsk) return { manual: false, rule: approvedRule } // kilocode_change - report auto-approval
+      // kilocode_change start - deterministic security decision layer (single authoritative hook).
+      // Runs after the hard veto, the explicit deny and the human-only guards, and before the
+      // auto-return/pending split. It is monotonic: it may raise an allow to ask or block a proven
+      // destructive call, never the reverse, and it is inert while the feature flag is off.
+      const security = SecurityDecisionAdapter.enabled()
+        ? yield* KiloSecurityGate.evaluate({
+            config,
+            workspace: (yield* InstanceState.context).worktree,
+            permission: request.permission,
+            patterns: request.patterns,
+            metadata: request.metadata,
+            sessionID: request.sessionID,
+            callID: request.tool?.callID,
+            resolved,
+            humanOnly: forceAsk || (isProtected && !trusted),
+            containment,
+          })
+        : undefined
+      // The initial record is written before any effect: an ask that is never answered, or is
+      // rejected, still leaves an audit trail behind.
+      if (security && audit) {
+        yield* audit(
+          SecurityDecisionAdapter.finalize(
+            security.audit,
+            security.decision === "deny" ? "deny" : security.decision === "ask" || needsAsk ? "ask_pending" : "allow",
+            "security",
+          ),
+        )
+      }
+      if (security?.decision === "deny") {
+        return yield* SecurityBlocked.of(
+          security.rule_id,
+          SecurityDecisionAdapter.finalize(security.audit, "deny", "security"),
+        )
+      }
+      if (security?.decision === "ask") needsAsk = true
+      // kilocode_change end
+
+      if (!needsAsk)
+        return {
+          manual: false,
+          rule: approvedRule,
+          // kilocode_change - carry the audit so the tool adapter can persist it
+          ...(security ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", "rule") } : {}),
+        }
 
       // kilocode_change start - headless subagent asks fail instead of queuing for a reply that never comes (#11903)
       if (yield* KiloHeadless.denies(request.sessionID).pipe(Effect.provideService(Database.Service, database))) {
+        // kilocode_change - an unanswerable ask the security layer raised is a block, not a silent deny
+        if (security?.decision === "ask") {
+          return yield* SecurityBlocked.of(
+            security.rule_id,
+            SecurityDecisionAdapter.finalize(security.audit, "blocked", "security"),
+          )
+        }
         return yield* new DeniedError({ ruleset: subset(request.permission, ruleset) })
       }
       // kilocode_change end
@@ -279,7 +347,10 @@ const layer = Layer.effect(
           pending.delete(id)
         }),
       )
-      return { manual: true } // the user was prompted and replied
+      return {
+        manual: true,
+        ...(security ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") } : {}),
+      } // the user was prompted and replied
       // kilocode_change end
     })
 

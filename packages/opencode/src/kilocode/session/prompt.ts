@@ -371,8 +371,13 @@ export namespace KiloSessionPrompt {
     })
     const outcome = yield* input.permission.ask({ ...input.request, ruleset, hardRuleset })
 
-    if (outcome.manual) return { source: "manual" } satisfies PermissionProvenance.Approval
-    return PermissionProvenance.classify({ rule: outcome.rule, agent: agent.name, origins: input.origins })
+    // kilocode_change - carry the deterministic security layer's audit alongside the approval
+    const security = outcome.security ? { security: outcome.security } : {}
+    if (outcome.manual) return { ...({ source: "manual" } satisfies PermissionProvenance.Approval), ...security }
+    return {
+      ...PermissionProvenance.classify({ rule: outcome.rule, agent: agent.name, origins: input.origins }),
+      ...security,
+    }
   })
 
   /** Mutable per-turn cache for deterministic environment detail blocks. */

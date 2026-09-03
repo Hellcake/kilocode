@@ -23,6 +23,11 @@ import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import * as SandboxPolicy from "@/kilocode/sandbox/policy" // kilocode_change
+// kilocode_change start - live containment facts for the deterministic security decision layer
+import { SandboxConfig } from "@/kilocode/sandbox/config"
+import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
+import { ContainmentMacos } from "@/kilocode/security-decision/containment-macos"
+// kilocode_change end
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 // kilocode_change start
@@ -93,6 +98,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const restricted = yield* SandboxPolicy.networkRestricted(input.session.id) // kilocode_change
   const sandboxed = (yield* SandboxPolicy.status(input.session.id)).enabled // kilocode_change
+  const sandboxState = SandboxConfig.resolve(cfg) // kilocode_change - exact mode and destinations for the audit
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => {
     const extra = {
       model: input.model,
@@ -112,22 +118,48 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       // kilocode_change start
       metadata: (val) => input.processor.metadata(options.toolCallId, val),
       ask: (req) =>
-        KiloSessionPrompt.askPermission({
-          permission,
-          agents,
-          sessions,
-          origins: permissionOrigins,
-          agent: input.agent,
-          session: input.session,
-          request: {
-            ...req,
-            sessionID: input.session.id,
-            tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          },
+        // kilocode_change - resolve live containment only while the security layer is enabled
+        Effect.gen(function* () {
+          const securityEnabled = SecurityDecisionAdapter.enabled()
+          const containment = securityEnabled
+            ? yield* Effect.promise(() =>
+                ContainmentMacos.facts({
+                  enabled: sandboxed,
+                  mode: sandboxState.mode,
+                  destinations: sandboxState.allowedHosts,
+                  escalated: extra.sandboxEscalation,
+                }),
+              )
+            : undefined
+          return yield* KiloSessionPrompt.askPermission({
+            permission,
+            agents,
+            sessions,
+            origins: permissionOrigins,
+            agent: input.agent,
+            session: input.session,
+            request: {
+              ...req,
+              sessionID: input.session.id,
+              ...(containment ? { containment } : {}),
+              // kilocode_change - persist the initial audit record before the call runs or asks
+              ...(securityEnabled
+                ? {
+                    audit: (record: SecurityDecisionAdapter.Audit) =>
+                      input.processor.metadata(options.toolCallId, {
+                        metadata: { [PermissionProvenance.SECURITY_KEY]: record },
+                      }),
+                  }
+                : {}),
+              tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+            },
+          })
         }).pipe(
           // record why the call was allowed onto the tool part, then discard the outcome for the tool-facing ask
-          Effect.tap((approval) =>
+          Effect.tap((outcome) =>
             Effect.gen(function* () {
+              // kilocode_change - split the security audit off the approval marker
+              const { security, ...approval } = outcome
               if (req.metadata?.["sandboxEscalation"] === true && approval.source === "manual") {
                 extra.sandboxEscalation = true
               }
@@ -138,8 +170,15 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                     req.permission,
                     PermissionProvenance.filepathOf(req.metadata),
                   ),
+                  ...(security ? { [PermissionProvenance.SECURITY_KEY]: security } : {}),
                 },
               })
+            }),
+          ),
+          // kilocode_change - record the audit for a call the security layer blocked outright
+          Effect.tapErrorTag("KiloSecurityBlockedError", (err) =>
+            input.processor.metadata(options.toolCallId, {
+              metadata: { [PermissionProvenance.SECURITY_KEY]: err.audit },
             }),
           ),
           // record why the call was denied too, so JSON exports and clients can explain the denial
