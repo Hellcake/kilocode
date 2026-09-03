@@ -42,6 +42,10 @@ export namespace SecurityDecisionTypes {
     /** Pipelines, substitutions, heredocs and other composition the scan observed. */
     composed: boolean
     executable?: string
+    /** The parsed command line, bounded. Present only for a single, fully recovered command. */
+    argv?: readonly string[]
+    /** Whether the executable's own file semantics are known to the scan. */
+    classified?: boolean
     class: "known" | "unknown"
   }>
 

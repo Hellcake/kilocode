@@ -22,7 +22,7 @@ const runtime = ManagedRuntime.make(
 
 type Effects = Array<{ operation: string; path?: string }>
 
-const scan = async (command: string, cwd: string) => {
+const facts = async (command: string, cwd: string) => {
   const permission = await runtime.runPromise(ShellPermission)
   const requests: Array<Omit<Permission.Request, "id" | "sessionID" | "tool">> = []
   const ctx = {
@@ -40,9 +40,17 @@ const scan = async (command: string, cwd: string) => {
   }
   await Effect.runPromise(permission.ask(ctx as never, { command, cwd, shell: "/bin/bash" }))
   const bash = requests.find((item) => item.permission === "bash")
-  const facts = bash?.metadata?.["securityFacts"] as { effects?: Effects } | undefined
-  return facts?.effects ?? []
+  return (bash?.metadata?.["securityFacts"] ?? {}) as {
+    effects?: Effects
+    argv?: string[]
+    executable?: string
+    classified?: boolean
+    complete?: boolean
+    composed?: boolean
+  }
 }
+
+const scan = async (command: string, cwd: string) => (await facts(command, cwd)).effects ?? []
 
 const withTmp = (fn: (cwd: string) => Promise<void>) => async () => {
   await using tmp = await tmpdir()
@@ -127,6 +135,43 @@ describe.skipIf(process.platform === "win32")("shell file effects", () => {
     "a descriptor redirect is not a file effect",
     withTmp(async (cwd) => {
       expect(await scan("npm test 2>&1", cwd)).toEqual([])
+    }),
+  )
+})
+
+describe.skipIf(process.platform === "win32")("shell exec facts", () => {
+  test(
+    "the parsed command line travels with the facts",
+    withTmp(async (cwd) => {
+      expect(await facts("sed -i s/a/b/ src/a.ts", cwd)).toMatchObject({
+        executable: "sed",
+        argv: ["sed", "-i", "s/a/b/", "src/a.ts"],
+        classified: false,
+      })
+    }),
+  )
+
+  test(
+    "an executable whose file effects the scan knows is reported as classified",
+    withTmp(async (cwd) => {
+      expect(await facts("cat README.md", cwd)).toMatchObject({ executable: "cat", classified: true })
+      expect(await facts("git status", cwd)).toMatchObject({ executable: "git", classified: false })
+    }),
+  )
+
+  test(
+    "redirect targets are effects, not argv",
+    withTmp(async (cwd) => {
+      expect((await facts("echo hi > out.txt", cwd)).argv).toEqual(["echo", "hi"])
+    }),
+  )
+
+  test(
+    "a composed command reports no command line to reason about",
+    withTmp(async (cwd) => {
+      const out = await facts("echo a && echo b", cwd)
+      expect(out.composed).toBe(true)
+      expect(out.argv).toBeUndefined()
     }),
   )
 })

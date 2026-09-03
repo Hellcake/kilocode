@@ -92,7 +92,14 @@ export namespace SecurityDecisionAdapter {
     sessionID: string
   }
 
-  export type Directive = Readonly<{ decision: T.Decision; rule_id: string; reviewable: boolean; audit: Audit }>
+  export type Directive = Readonly<{
+    decision: T.Decision
+    rule_id: string
+    reviewable: boolean
+    /** Bounded context for the reviewer. Present only for a reviewable ask, never for a deny. */
+    review?: SecurityReviewer.Request
+    audit: Audit
+  }>
 
   /**
    * Server-side feature flag. It lives in the process environment precisely so a project config,
@@ -189,10 +196,19 @@ export namespace SecurityDecisionAdapter {
     const facts = request.metadata?.["securityFacts"]
     // No facts at all is a plumbing gap, not an unparsed command: report it as missing metadata.
     if (!facts || typeof facts !== "object") return undefined
-    const value = facts as { complete?: unknown; composed?: unknown; executable?: unknown }
+    const value = facts as {
+      complete?: unknown
+      composed?: unknown
+      executable?: unknown
+      argv?: unknown
+      classified?: unknown
+    }
+    const argv = Array.isArray(value.argv) ? value.argv.filter((item): item is string => typeof item === "string") : []
     return {
       complete: value.complete === true,
       composed: value.composed === true,
+      classified: value.classified === true,
+      argv,
       ...(typeof value.executable === "string"
         ? { executable: value.executable, class: "known" as const }
         : { class: "unknown" as const }),
@@ -292,13 +308,26 @@ export namespace SecurityDecisionAdapter {
   export function evaluate(request: Request, ctx: Context): Directive {
     const started = Date.now()
     try {
-      const result = SecurityDecision.decide(toInput(request, ctx))
-      const reviewed = SecurityReviewer.review(result)
+      const input = toInput(request, ctx)
+      const result = SecurityDecision.decide(input)
       return {
-        decision: reviewed.result.decision,
-        rule_id: reviewed.result.rule_id,
-        reviewable: reviewed.result.reviewable,
-        audit: { ...audit(request, ctx, reviewed.result, started), reviewer: reviewed.outcome },
+        decision: result.decision,
+        rule_id: result.rule_id,
+        reviewable: result.reviewable,
+        ...(result.decision === "ask" && result.reviewable
+          ? {
+              review: SecurityReviewer.request({
+                rule_id: result.rule_id,
+                kind: input.action.kind,
+                operation: input.action.operation,
+                ...(input.action.exec?.executable ? { executable: input.action.exec.executable } : {}),
+                argv: input.action.exec?.argv,
+                paths: input.action.paths,
+                containment: ctx.containment,
+              }),
+            }
+          : {}),
+        audit: audit(request, ctx, result, started),
       }
     } catch {
       // Anything unexpected in normalization, the core or the reviewer fails closed to ask.

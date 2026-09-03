@@ -24,17 +24,31 @@ type Effect = { operation: "read" | "update" | "delete" | "move"; path?: string 
 const structured = (permission: string, patterns: string[], metadata: Record<string, unknown> = {}) =>
   SecurityDecisionAdapter.evaluate({ permission, patterns, metadata, sessionID }, ctx)
 
-/** A single, fully parsed, uncomposed shell command carrying its extracted file effects. */
-const shell = (command: string, effects: Effect[], executable = command.split(/\s+/)[0]) =>
-  SecurityDecisionAdapter.evaluate(
+/**
+ * A single, fully parsed, uncomposed shell command carrying its extracted file effects. `classified`
+ * mirrors the scan: it is set when the executable itself is in the effect table.
+ */
+const shell = (command: string, effects: Effect[], classifiedAs?: string) => {
+  const argv = command.split(/\s+/)
+  return SecurityDecisionAdapter.evaluate(
     {
       permission: "bash",
       patterns: [command],
-      metadata: { securityFacts: { complete: true, composed: false, executable, effects } },
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: argv[0],
+          argv,
+          effects,
+          classified: classifiedAs !== undefined,
+        },
+      },
       sessionID,
     },
     ctx,
   )
+}
 
 describe("route equivalence", () => {
   test("git hook write: edit and shell redirect agree", () => {
@@ -107,14 +121,16 @@ describe("route equivalence", () => {
 
   test("a benign read-only command keeps no opinion", () => {
     expect(shell("git status", []).rule_id).toBe("SEC.V1.NO_OPINION")
-    expect(shell("cat README.md", [{ operation: "read", path: "/w/README.md" }]).rule_id).toBe("SEC.V1.NO_OPINION")
-    expect(shell("mkdir -p build", [{ operation: "update", path: "/w/build" }]).rule_id).toBe("SEC.V1.NO_OPINION")
+    expect(shell("cat README.md", [{ operation: "read", path: "/w/README.md" }], "cat").rule_id).toBe(
+      "SEC.V1.NO_OPINION",
+    )
+    expect(shell("mkdir -p build", [{ operation: "update", path: "/w/build" }], "mkdir").rule_id).toBe(
+      "SEC.V1.NO_OPINION",
+    )
   })
 
   test("the standard output sink is not a device write", () => {
-    expect(shell("npm test > /dev/null", [{ operation: "update", path: "/dev/null" }]).rule_id).toBe(
-      "SEC.V1.NO_OPINION",
-    )
+    expect(shell("echo hi > /dev/null", [{ operation: "update", path: "/dev/null" }]).rule_id).toBe("SEC.V1.NO_OPINION")
   })
 
   test("composition and parse failures still win over path facts", () => {

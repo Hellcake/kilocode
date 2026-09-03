@@ -1,11 +1,13 @@
 import { test, expect, describe, afterEach } from "bun:test"
 import { Effect } from "effect"
 import { KiloSecurityGate } from "../../../src/kilocode/security-decision/gate"
+import { SecurityReviewer } from "../../../src/kilocode/security-decision/reviewer"
 
 const previous = process.env["KILO_SECURITY_DECISION"]
 afterEach(() => {
   if (previous === undefined) delete process.env["KILO_SECURITY_DECISION"]
   else process.env["KILO_SECURITY_DECISION"] = previous
+  SecurityReviewer.reset()
 })
 
 function on() {
@@ -132,3 +134,130 @@ describe("KiloSecurityGate", () => {
     expect(out?.decision).toBe("pass")
   })
 })
+
+// kilocode_change start - the reviewer stage lives in the gate, after the deterministic decision
+const unclassified = {
+  permission: "bash",
+  patterns: ["sed -i s/a/b/ src/a.ts"],
+  metadata: {
+    securityFacts: {
+      complete: true,
+      composed: false,
+      executable: "sed",
+      argv: ["sed", "-i", "s/a/b/", "src/a.ts"],
+      effects: [],
+    },
+  },
+  resolved: [{ pattern: "sed -i s/a/b/ src/a.ts", action: "allow" as const }],
+}
+
+describe("KiloSecurityGate reviewer stage", () => {
+  test("never offers a deterministic deny to the reviewer", async () => {
+    on()
+    let called = 0
+    SecurityReviewer.bind(() => {
+      called++
+      return Promise.resolve('{"decision":"allow","reason_code":"OK"}')
+    })
+
+    const out = await run()
+
+    expect(out?.decision).toBe("deny")
+    expect(called).toBe(0)
+    expect(out?.audit.reviewer).toEqual({ state: "not_run" })
+  })
+
+  test("routes a fully parsed unclassified command to a reviewable ask", async () => {
+    on()
+    const out = await run(unclassified)
+
+    expect(out?.decision).toBe("ask")
+    expect(out?.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(out?.reviewable).toBe(true)
+  })
+
+  test("an allow verdict narrows that ask for this call", async () => {
+    on()
+    SecurityReviewer.bind(() => Promise.resolve('{"decision":"allow","reason_code":"IN_WORKSPACE_EDIT"}'))
+
+    const out = await run(unclassified)
+
+    expect(out?.decision).toBe("allow")
+    expect(out?.audit.reviewer).toMatchObject({ state: "allow", reason_code: "IN_WORKSPACE_EDIT" })
+    expect(out?.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+  })
+
+  test("a keep_ask verdict leaves the ask standing", async () => {
+    on()
+    SecurityReviewer.bind(() => Promise.resolve('{"decision":"keep_ask","reason_code":"UNCLEAR"}'))
+
+    const out = await run(unclassified)
+
+    expect(out?.decision).toBe("ask")
+    expect(out?.audit.reviewer).toMatchObject({ state: "keep_ask" })
+  })
+
+  test("a failing reviewer leaves the ask standing", async () => {
+    on()
+    SecurityReviewer.bind(() => Promise.reject(new Error("down")))
+
+    const out = await run(unclassified)
+
+    expect(out?.decision).toBe("ask")
+    expect(out?.audit.reviewer.state).toBe("error")
+  })
+
+  test("a human-only ask is never narrowed", async () => {
+    on()
+    let called = 0
+    SecurityReviewer.bind(() => {
+      called++
+      return Promise.resolve('{"decision":"allow","reason_code":"OK"}')
+    })
+
+    const out = await run({ ...unclassified, humanOnly: true })
+
+    expect(out?.decision).toBe("ask")
+    expect(called).toBe(0)
+  })
+
+  test("an ask under a conflicting user-global rule is never narrowed", async () => {
+    on()
+    let called = 0
+    SecurityReviewer.bind(() => {
+      called++
+      return Promise.resolve('{"decision":"allow","reason_code":"OK"}')
+    })
+
+    const out = await run({
+      ...unclassified,
+      config: config({ bash: { "*": "ask" } }),
+      resolved: [{ pattern: "sed -i s/a/b/ src/a.ts", action: "allow" as const }],
+    })
+
+    expect(out?.decision).toBe("ask")
+    expect(called).toBe(0)
+  })
+
+  test("an inert command never reaches the reviewer", async () => {
+    on()
+    let called = 0
+    SecurityReviewer.bind(() => {
+      called++
+      return Promise.resolve('{"decision":"allow","reason_code":"OK"}')
+    })
+
+    const out = await run({
+      ...unclassified,
+      patterns: ["git status"],
+      metadata: {
+        securityFacts: { complete: true, composed: false, executable: "git", argv: ["git", "status"], effects: [] },
+      },
+      resolved: [{ pattern: "git status", action: "allow" as const }],
+    })
+
+    expect(out?.decision).toBe("pass")
+    expect(called).toBe(0)
+  })
+})
+// kilocode_change end

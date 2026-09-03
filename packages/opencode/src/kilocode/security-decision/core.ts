@@ -14,6 +14,45 @@ export namespace SecurityDecision {
   /** Operations that unambiguously destroy or relocate their target. */
   const DESTRUCTIVE = new Set(["delete", "move"])
 
+  /**
+   * Executables that can neither mutate state nor reveal file contents, whatever their arguments.
+   * Deliberately tiny: this is an allowlist of proven-inert commands, not a catalog of safe tools.
+   * Anything not here is unclassified, which is an ask, not a refusal.
+   */
+  const INERT = new Set([
+    "basename",
+    "date",
+    "dirname",
+    "echo",
+    "false",
+    "hostname",
+    "ls",
+    "printf",
+    "pwd",
+    "sleep",
+    "true",
+    "uname",
+    "which",
+    "whoami",
+  ])
+
+  /** Tools whose safety is decided by the verb rather than the binary. */
+  const INERT_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+    git: new Set(["blame", "describe", "diff", "log", "ls-files", "rev-parse", "show", "status"]),
+  }
+
+  /** True only for a command proven inert. An unnamed executable is never inert. */
+  function inert(exec: SecurityDecisionTypes.ExecFact) {
+    const name = exec.executable
+    if (!name) return false
+    if (INERT.has(name)) return true
+    const verbs = INERT_SUBCOMMANDS[name]
+    if (!verbs) return false
+    // The first argument that is not a flag is the verb; anything else fails closed.
+    const verb = exec.argv?.slice(1).find((token) => !token.startsWith("-"))
+    return verb !== undefined && verbs.has(verb)
+  }
+
   function target(input: SecurityDecisionTypes.Input, fact: SecurityDecisionTypes.PathFact): R.Entry {
     // A shell command can read one target and write another, so a fact's own operation wins.
     const op = fact.operation ?? input.action.operation
@@ -58,7 +97,10 @@ export namespace SecurityDecision {
     if (rule.decision === "deny" && (input.baseline.humanOnly || input.baseline.authority !== "untrusted")) {
       return { ...R.result(rule), decision: "ask", reviewable: false }
     }
-    return R.result(rule)
+    const result = R.result(rule)
+    // An existing human-only guard is never narrowed by a reviewer: a human has to answer it.
+    if (input.baseline.humanOnly && result.decision === "ask") return { ...result, reviewable: false }
+    return result
   }
 
   function evaluate(input: SecurityDecisionTypes.Input): R.Entry {
@@ -79,6 +121,11 @@ export namespace SecurityDecision {
       const rule = target(input, fact)
       if (strictness(rule.decision) > strictness(winner.decision)) winner = rule
     }
+    // Only once every deterministic path rule has had its say. A complete parse is not proof of
+    // safety: unless the scan knows what this executable does to files, or the command is proven
+    // inert, the action is unclassified rather than harmless.
+    if (winner.decision === "pass" && exec && exec.complete && !exec.composed && !exec.classified && !inert(exec))
+      return R.UNCLASSIFIED_EXEC
     return winner
   }
 }

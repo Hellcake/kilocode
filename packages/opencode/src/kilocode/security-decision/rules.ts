@@ -60,6 +60,13 @@ export namespace SecurityDecisionRules {
   /** Soft ambiguity a human routinely resolves: reviewable once a reviewer exists. */
   export const DESTRUCTIVE_FS = entry("SEC.V1.DESTRUCTIVE_FS", "ask", true)
 
+  /**
+   * A shell action the parser fully recovered that produced no confident file effect. A complete
+   * parse is not proof of safety — `sed -i`, `git push --force` and `npm publish` all parse cleanly.
+   * It is reviewable precisely because a narrow, bounded judgement is what it needs.
+   */
+  export const UNCLASSIFIED_EXEC = entry("SEC.V1.UNCLASSIFIED_EXEC", "ask", true)
+
   export function result(rule: Entry): SecurityDecisionTypes.Result {
     return {
       decision: rule.decision,

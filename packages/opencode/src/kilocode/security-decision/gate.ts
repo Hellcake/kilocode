@@ -98,7 +98,39 @@ export namespace KiloSecurityGate {
         audit: { ...directive.audit, rule_id: result.rule_id, reason: result.reason, decision: result.decision },
       } satisfies SecurityDecisionAdapter.Directive
     }
-    return directive
+
+    return yield* narrow(directive, input, floor)
+  })
+
+  /**
+   * The reviewer stage. It runs after the deterministic decision and only where that decision is a
+   * reviewable ask: never on a deny, never on a human-only ask, never where the XDG floor and the
+   * effective rule disagree. It can only narrow this one call, and it never writes policy.
+   */
+  const narrow = Effect.fn("KiloSecurityGate.narrow")(function* (
+    directive: SecurityDecisionAdapter.Directive,
+    input: Input,
+    floor: SecurityAuthority.Floor,
+  ) {
+    if (directive.decision !== "ask" || !directive.reviewable || !directive.review) return directive
+    if (input.humanOnly || floor.conflict) return directive
+
+    const reviewed = yield* SecurityReviewer.review(
+      {
+        decision: directive.decision,
+        reason: directive.audit.reason,
+        rule_id: directive.rule_id,
+        requirements: directive.audit.requirements,
+        reviewable: directive.reviewable,
+      },
+      directive.review,
+    )
+
+    return {
+      ...directive,
+      decision: reviewed.result.decision,
+      audit: { ...directive.audit, reviewer: reviewed.outcome },
+    } satisfies SecurityDecisionAdapter.Directive
   })
 
   function failClosed(input: Input): SecurityDecisionAdapter.Directive {

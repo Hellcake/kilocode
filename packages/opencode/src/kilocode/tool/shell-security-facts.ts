@@ -24,15 +24,65 @@ const COMPOSITION = [
   "heredoc_redirect",
 ] as const
 
-export type ShellSecurityFacts = { complete: boolean; composed: boolean; executable?: string }
+export type ShellSecurityFacts = {
+  complete: boolean
+  composed: boolean
+  executable?: string
+  /** The parsed command line. Present only for a single, fully recovered, uncomposed command. */
+  argv?: string[]
+  /**
+   * True when the executable's own file semantics are known — it is in the effect table above, so
+   * its effects were extracted rather than merely absent. A redirect alone never classifies a
+   * command: `npm test > out.log` has an effect but the program itself is still arbitrary.
+   */
+  classified?: boolean
+}
+
+/** Argument node types that carry a token of the command line. Redirects are effects, not argv. */
+const ARGV = new Set([
+  "command_name",
+  "word",
+  "string",
+  "raw_string",
+  "concatenation",
+  "number",
+  "simple_expansion",
+  "expansion",
+])
+
+function argv(node: Node): string[] {
+  const out: string[] = []
+  const walk = (parent: Node) => {
+    for (let i = 0; i < parent.namedChildCount; i++) {
+      const child = parent.namedChild(i)
+      if (!child) continue
+      if (child.type === "file_redirect" || child.type === "redirection") continue
+      if (child.type === "command_elements") {
+        walk(child)
+        continue
+      }
+      if (!ARGV.has(child.type)) continue
+      out.push(child.text)
+    }
+  }
+  walk(node)
+  return out
+}
 
 export function securityFacts(root: Node, unrecovered: number, commands: readonly Node[]): ShellSecurityFacts {
   const complete = !root.hasError && unrecovered === 0
   const composed =
     commands.length > 1 || COMPOSITION.some((type) => root.descendantsOfType(type).some((node) => Boolean(node)))
   if (!complete || composed || commands.length !== 1) return { complete, composed }
-  const name = commands[0]!.descendantsOfType("command_name")[0]?.text.trim()
-  return { complete, composed, ...(name ? { executable: name } : {}) }
+  const node = commands[0]!
+  const name = node.descendantsOfType("command_name")[0]?.text.trim()
+  return {
+    complete,
+    composed,
+    ...(name ? { executable: name } : {}),
+    argv: argv(node),
+    classified: name !== undefined && commandOperation(name) !== undefined,
+  }
 }
 
 /** The file operations the layer can name. They mirror the operations structured file tools report. */
