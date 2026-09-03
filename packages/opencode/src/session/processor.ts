@@ -24,7 +24,7 @@ import { Question } from "@/question"
 // kilocode_change start
 import { KiloSessionProcessor, type ReviewTelemetry } from "@/kilocode/session/processor"
 import { PermissionProvenance } from "@/kilocode/permission/provenance" // kilocode_change
-import { SecurityBlocked } from "@/kilocode/security-decision/block" // kilocode_change
+import { SecurityContinuation } from "@/kilocode/security-decision/continuation" // kilocode_change
 import { KiloSessionOverflow } from "@/kilocode/session/overflow"
 import { KiloRoutedModel } from "@/kilocode/session/routed-model"
 import { KiloResponseMetadata } from "@/kilocode/session/response-metadata"
@@ -91,6 +91,7 @@ interface ProcessorContext extends Input {
   shouldBreak: boolean
   snapshot: string | undefined
   blocked: boolean
+  securityBlocks: SecurityContinuation.State // kilocode_change - identical blocked calls must not loop
   needsCompaction: boolean
   compactionError: ReturnType<typeof MessageV2.ContextOverflowError.prototype.toObject> | undefined // kilocode_change
   currentText: SessionV1.TextPart | undefined
@@ -144,6 +145,7 @@ const layer = Layer.effect(
         shouldBreak: false,
         snapshot: initialSnapshot,
         blocked: false,
+        securityBlocks: SecurityContinuation.state(), // kilocode_change
         needsCompaction: false,
         compactionError: undefined, // kilocode_change
         currentText: undefined,
@@ -295,6 +297,7 @@ const layer = Layer.effect(
       const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return false
+        const call = { tool: match.part.tool, input: match.part.state.input } // kilocode_change
         yield* session.updatePart({
           ...match.part,
           state: {
@@ -307,9 +310,11 @@ const layer = Layer.effect(
           },
         })
         // kilocode_change start
-        if (SecurityBlocked.is(error)) {
-          // A deterministic security block always ends the turn, even with continue_loop_on_deny.
-          ctx.blocked = true
+        const security = SecurityContinuation.after(ctx.securityBlocks, error, call)
+        if (security) {
+          // The blocked call never ran, so the turn continues and the model may take another allowed
+          // path. Re-issuing the identical call is not another path: that ends the turn.
+          ctx.blocked = security === "stop"
         } else if (
           error instanceof PermissionV1.RejectedError ||
           error instanceof Question.RejectedError ||

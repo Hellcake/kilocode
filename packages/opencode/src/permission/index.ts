@@ -4,7 +4,7 @@ import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
 import * as Config from "@/config/config" // kilocode_change
 import { InstanceState } from "@/effect/instance-state"
 import { Wildcard } from "@opencode-ai/core/util/wildcard"
-import { Deferred, Effect, Layer, Context } from "effect"
+import { Deferred, Effect, Exit, Layer, Context } from "effect"
 import os from "os"
 import z from "zod" // kilocode_change
 import { zod } from "@opencode-ai/core/effect-zod" // kilocode_change
@@ -22,6 +22,7 @@ import { ExternalDirectoryPermission } from "@/kilocode/permission/external-dire
 import { KiloSecurityGate } from "@/kilocode/security-decision/gate"
 import { SecurityBlocked } from "@/kilocode/security-decision/block"
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
+import { SecurityAsk } from "@/kilocode/security-decision/ask"
 import type { SecurityDecisionTypes } from "@/kilocode/security-decision/types"
 // kilocode_change end
 
@@ -104,6 +105,11 @@ interface PendingEntry {
   ruleset: Ruleset
   hardRuleset?: Ruleset
   saved?: boolean
+  /**
+   * Set by `reply` when a human or a client actually rejected this request, so `ask` can tell an
+   * answered rejection from a session teardown that fails every pending deferred at once.
+   */
+  rejection?: { interactive: boolean }
   // kilocode_change end
   deferred: Deferred.Deferred<void, RejectedError | CorrectedError>
 }
@@ -162,6 +168,7 @@ function covered(entry: PendingEntry, approved: Ruleset, local: Ruleset) {
   if (ConfigProtection.isRequest(entry.info)) return false
   if (entry.info.metadata?.["skillShell"] === true) return false // kilocode_change - skill batch needs an explicit reply
   if (entry.info.metadata?.["sandboxEscalation"] === true) return false // kilocode_change - host access needs an explicit reply
+  if (SecurityAsk.is(entry.info.metadata)) return false // kilocode_change - a security-raised ask is never auto-approved
   return entry.info.patterns.every((pattern) => {
     if (veto(entry.info.permission, pattern, entry.hardRuleset)) return false
     return resolve(entry.info.permission, pattern, entry.ruleset, approved, local).action === "allow"
@@ -293,7 +300,15 @@ const layer = Layer.effect(
           SecurityDecisionAdapter.finalize(security.audit, "deny", "security"),
         )
       }
-      if (security?.decision === "ask") needsAsk = true
+      // Provenance: *any* ask the layer decided on is a security decision, even when the existing
+      // pipeline already needed an ask of its own. Every automated path keys off this, so nothing
+      // can approve it by mistaking it for an ordinary ask.
+      const securityAsk = security?.decision === "ask"
+      // Enforcement: only an ask the layer raised by itself carries the security reject semantics.
+      // An ask the pipeline already needed (a rule, a skill batch, a protected config path) keeps
+      // Kilo's ordinary reject semantics.
+      const securityRaisedAsk = securityAsk && !needsAsk
+      if (securityAsk) needsAsk = true
       // kilocode_change end
 
       if (!needsAsk)
@@ -307,7 +322,7 @@ const layer = Layer.effect(
       // kilocode_change start - headless subagent asks fail instead of queuing for a reply that never comes (#11903)
       if (yield* KiloHeadless.denies(request.sessionID).pipe(Effect.provideService(Database.Service, database))) {
         // kilocode_change - an unanswerable ask the security layer raised is a block, not a silent deny
-        if (security?.decision === "ask") {
+        if (securityAsk && security) {
           return yield* SecurityBlocked.of(
             security.rule_id,
             SecurityDecisionAdapter.finalize(security.audit, "blocked", "security"),
@@ -323,13 +338,15 @@ const layer = Layer.effect(
         sessionID: request.sessionID,
         permission: request.permission,
         patterns: request.patterns,
-        // kilocode_change start - disable persistence for protected config paths outside one exact global skill
+        // kilocode_change start - disable persistence for protected config paths outside one exact global skill,
+        // and tag a security-raised ask so no client can auto-approve it
         metadata: {
           ...request.metadata,
           ...(skill ? { rules: [skill] } : {}),
           ...(isProtected && skill === undefined
             ? { [ConfigProtection.DISABLE_ALWAYS_KEY]: true, [ConfigProtection.CONFIG_PROTECTED_KEY]: true }
             : {}),
+          ...(securityAsk && security ? SecurityAsk.mark({}, { rule_id: security.rule_id }) : {}),
         },
         // kilocode_change end
         always: skill ? [skill] : request.always, // kilocode_change - persist only the exact global skill subtree
@@ -338,8 +355,31 @@ const layer = Layer.effect(
       yield* Effect.logInfo("asking", { id, permission: info.permission, patterns: info.patterns })
 
       const deferred = yield* Deferred.make<void, RejectedError | CorrectedError>()
-      pending.set(id, { info, ruleset, hardRuleset, deferred }) // kilocode_change
+      const entry: PendingEntry = { info, ruleset, hardRuleset, deferred } // kilocode_change
+      pending.set(id, entry) // kilocode_change
       yield* events.publish(Event.Asked, info) // kilocode_change - was bus.publish
+      // kilocode_change start - a security-raised ask enforces the security outcome itself: a rejection
+      // blocks this one call with the fixed result instead of failing the turn like an ordinary reject.
+      if (securityRaisedAsk && security) {
+        const exit = yield* Effect.ensuring(
+          Deferred.await(deferred),
+          Effect.sync(() => {
+            pending.delete(id)
+          }),
+        ).pipe(Effect.exit)
+        if (Exit.isSuccess(exit))
+          return { manual: true, security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") }
+        // Only an answered rejection is enforcement; a session teardown keeps its existing semantics.
+        if (!entry.rejection) return yield* Effect.failCause(exit.cause)
+        const record = SecurityDecisionAdapter.finalize(
+          security.audit,
+          entry.rejection.interactive ? "reject" : "blocked",
+          "security",
+        )
+        if (audit) yield* audit(record)
+        return yield* SecurityBlocked.of(security.rule_id, record)
+      }
+      // kilocode_change end
       // kilocode_change start - was `return yield* Effect.ensuring(...)`; report the manual decision to callers
       yield* Effect.ensuring(
         Deferred.await(deferred),
@@ -364,7 +404,9 @@ const layer = Layer.effect(
       // Log rather than fail silently: a genuine human client sets `interactive`, so a refused reply here
       // means an auto-approver tried to answer — the request intentionally stays pending for a human.
       if (
-        (existing.info.metadata?.["skillShell"] === true || existing.info.metadata?.["sandboxEscalation"] === true) &&
+        (existing.info.metadata?.["skillShell"] === true ||
+          existing.info.metadata?.["sandboxEscalation"] === true ||
+          SecurityAsk.is(existing.info.metadata)) && // kilocode_change - a security-raised ask is never machine-approved
         input.reply !== "reject" &&
         input.interactive !== true
       ) {
@@ -383,6 +425,7 @@ const layer = Layer.effect(
       })
 
       if (input.reply === "reject") {
+        existing.rejection = { interactive: input.interactive === true } // kilocode_change - answered, not torn down
         yield* Deferred.fail(
           existing.deferred,
           input.message
@@ -392,6 +435,7 @@ const layer = Layer.effect(
 
         for (const [id, item] of pending.entries()) {
           if (item.info.sessionID !== existing.info.sessionID) continue
+          item.rejection = { interactive: false } // kilocode_change - cascaded, so no human saw this one
           pending.delete(id)
           yield* events.publish(Event.Replied, {
             sessionID: item.info.sessionID,

@@ -41,6 +41,7 @@ import { appendTerminalOutput } from "@/kilocode/interactive-terminal/output" //
 import { at, recent, slot } from "../kilocode/message-order" // kilocode_change
 import { useToast } from "../ui/toast" // kilocode_change
 import { usePermission } from "./permission"
+import { SecurityAsk } from "@/kilocode/security-decision/ask" // kilocode_change
 
 const emptyConsoleState: ConsoleState = {
   consoleManagedProviders: [],
@@ -256,7 +257,8 @@ export const {
 
         case "permission.asked": {
           const request = event.properties
-          if (permission.mode === "auto") {
+          // kilocode_change - a security-raised ask is never auto-approved; it falls through to the human
+          if (permission.mode === "auto" && !SecurityAsk.is(request.metadata)) {
             void sdk.client.permission.reply({
               requestID: request.id,
               reply: "once",
