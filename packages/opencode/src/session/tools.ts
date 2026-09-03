@@ -27,6 +27,8 @@ import * as SandboxPolicy from "@/kilocode/sandbox/policy" // kilocode_change
 import { SandboxConfig } from "@/kilocode/sandbox/config"
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import { ContainmentMacos } from "@/kilocode/security-decision/containment-macos"
+import { SecurityRealpath } from "@/kilocode/security-decision/realpath"
+import { InstanceState } from "@/effect/instance-state"
 // kilocode_change end
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -131,6 +133,22 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
                 }),
               )
             : undefined
+          // kilocode_change start - resolve filesystem identity once, before the decision runs, so a
+          // symlink is judged by what it points at while the pure core stays free of IO
+          const worktree = securityEnabled ? (yield* InstanceState.context).worktree : undefined
+          const securityPaths =
+            worktree !== undefined ? yield* Effect.promise(() => SecurityRealpath.paths(req, worktree)) : undefined
+          const facts = req.metadata?.["securityFacts"]
+          const securityFacts =
+            worktree !== undefined && facts && typeof facts === "object"
+              ? {
+                  ...(facts as Record<string, unknown>),
+                  effects: yield* Effect.promise(() =>
+                    SecurityRealpath.effects((facts as { effects?: unknown }).effects, worktree),
+                  ),
+                }
+              : undefined
+          // kilocode_change end
           return yield* KiloSessionPrompt.askPermission({
             permission,
             agents,
@@ -142,6 +160,16 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               ...req,
               sessionID: input.session.id,
               ...(containment ? { containment } : {}),
+              // kilocode_change - the resolved targets travel with the ask; patterns are untouched
+              ...(securityPaths || securityFacts
+                ? {
+                    metadata: {
+                      ...req.metadata,
+                      ...(securityPaths ? { securityPaths } : {}),
+                      ...(securityFacts ? { securityFacts } : {}),
+                    },
+                  }
+                : {}),
               // kilocode_change - persist the initial audit record before the call runs or asks
               ...(securityEnabled
                 ? {

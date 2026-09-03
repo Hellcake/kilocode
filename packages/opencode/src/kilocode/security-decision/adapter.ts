@@ -140,6 +140,14 @@ export namespace SecurityDecisionAdapter {
   function pathClass(target: string): T.PathClass {
     const base = path.posix.basename(target)
     if (/(^|\/)\.git\/hooks\//.test(target)) return "git_hook"
+    // Control plane: hook redirection, filter drivers and direnv all install code that later runs.
+    if (
+      /(^|\/)\.git\/config$/.test(target) ||
+      /(^|\/)\.git\/info\/attributes$/.test(target) ||
+      base === ".gitattributes" ||
+      base === ".envrc"
+    )
+      return "control_plane"
     if (/(^|\/)\.github\/workflows\//.test(target) || base === ".gitlab-ci.yml" || /(^|\/)\.circleci\//.test(target))
       return "ci"
     if (base === "package.json") return "package_manifest"
@@ -192,6 +200,17 @@ export namespace SecurityDecisionAdapter {
   }
 
   /**
+   * Real targets resolved before the ask, index-aligned with `patterns`. An empty entry means the
+   * resolution could not determine the target, which classifies as unknown and holds at ask; a
+   * missing array means no resolution was attempted and the pattern itself stands.
+   */
+  function resolved(request: Request): Array<string> | undefined {
+    const value = request.metadata?.["securityPaths"]
+    if (!Array.isArray(value)) return undefined
+    return value.map((item) => (typeof item === "string" ? item : item === null ? "" : undefined)) as string[]
+  }
+
+  /**
    * File effects the shell scan extracted, normalized into path facts so a shell route reaches the
    * same rules as `edit`/`write`/`read`. An effect without a path is a target the scan could not
    * determine: it becomes an `unknown` fact, which the core holds at ask.
@@ -228,7 +247,11 @@ export namespace SecurityDecisionAdapter {
         ? []
         : EXECS.has(request.permission)
           ? effects(request, ctx.workspace)
-          : request.patterns.map((pattern) => classify(pattern, ctx.workspace))
+          : (() => {
+              // A symlink must be judged by what it points at, so the resolved target wins.
+              const real = resolved(request)
+              return request.patterns.map((pattern, index) => classify(real?.[index] ?? pattern, ctx.workspace))
+            })()
     const facts = exec(request)
     const complete = !EXECS.has(request.permission) || facts !== undefined
     return {

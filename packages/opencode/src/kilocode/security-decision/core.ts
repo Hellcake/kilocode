@@ -30,6 +30,13 @@ export namespace SecurityDecision {
       return R.AMBIGUOUS_OPERATION
     }
 
+    // Reading the control plane is ordinary; installing into it is not.
+    if (fact.class === "control_plane") {
+      if (WRITES.has(op)) return R.CONTROL_PLANE_WRITE
+      if (op === "read") return R.NO_OPINION
+      return R.AMBIGUOUS_OPERATION
+    }
+
     if (fact.class === "unknown") return R.UNKNOWN_TARGET
     if (fact.class === "sensitive" || !fact.inWorkspace) return R.SENSITIVE_BOUNDARY
     if (fact.class === "ci") return R.CI_AUTHORITY

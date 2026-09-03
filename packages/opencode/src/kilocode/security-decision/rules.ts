@@ -33,6 +33,14 @@ export namespace SecurityDecisionRules {
   export const DESTRUCTIVE_ROOT = entry("SEC.V1.DESTRUCTIVE_ROOT", "deny")
   export const GIT_HOOK_WRITE = entry("SEC.V1.GIT_HOOK_WRITE", "deny")
 
+  /**
+   * Repository control plane. These files do not execute themselves, but writing them installs code
+   * that later runs — `core.hooksPath`, filter drivers, direnv. They ask rather than deny: a human
+   * routinely edits `.gitattributes`, and the shell route cannot see `git config`, so denying here
+   * would open a new route asymmetry instead of closing one.
+   */
+  export const CONTROL_PLANE_WRITE = entry("SEC.V1.CONTROL_PLANE_WRITE", "ask")
+
   /** Ambiguity, incompleteness and authority boundaries: ask, never deny. */
   export const AMBIGUOUS_OPERATION = entry("SEC.V1.AMBIGUOUS_OPERATION", "ask")
   export const METADATA_INCOMPLETE = entry("SEC.V1.METADATA_INCOMPLETE", "ask")

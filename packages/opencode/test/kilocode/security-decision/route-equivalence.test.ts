@@ -153,3 +153,107 @@ describe("route equivalence", () => {
     expect(bare.rule_id).toBe("SEC.V1.METADATA_INCOMPLETE")
   })
 })
+
+/**
+ * Filesystem identity: the ask carries the resolved real target alongside the pattern, so a symlink
+ * is judged by what it actually points at. `null` means resolution failed and must not pass.
+ */
+const resolved = (permission: string, patterns: string[], securityPaths: Array<string | null>) =>
+  SecurityDecisionAdapter.evaluate({ permission, patterns, metadata: { securityPaths }, sessionID }, ctx)
+
+describe("filesystem identity", () => {
+  test("a symlink into a git hook decides like the hook itself", () => {
+    const direct = structured("edit", [".git/hooks/pre-commit"])
+    const link = resolved("edit", ["foo"], ["/w/.git/hooks/pre-commit"])
+
+    expect(link.rule_id).toBe(direct.rule_id)
+    expect(link.decision).toBe(direct.decision)
+    expect(link.decision).toBe("deny")
+  })
+
+  test("a symlink onto a sensitive target asks", () => {
+    const link = resolved("write", ["notes.md"], ["/w/.env"])
+
+    expect(link.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(link.decision).toBe("ask")
+  })
+
+  test("a symlink leaving the workspace asks", () => {
+    const link = resolved("edit", ["notes.md"], ["/elsewhere/id_rsa"])
+
+    expect(link.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(link.decision).toBe("ask")
+  })
+
+  test("a symlink onto a CI workflow decides like that workflow", () => {
+    const direct = structured("edit", [".github/workflows/ci.yml"])
+    const link = resolved("edit", ["build.yml"], ["/w/.github/workflows/ci.yml"])
+
+    expect(link.rule_id).toBe(direct.rule_id)
+  })
+
+  test("an ordinary file is unaffected by resolution", () => {
+    const plain = structured("edit", ["src/a.ts"])
+    const same = resolved("edit", ["src/a.ts"], ["/w/src/a.ts"])
+
+    expect(plain.rule_id).toBe("SEC.V1.NO_OPINION")
+    expect(same.rule_id).toBe(plain.rule_id)
+  })
+
+  test("a target that could not be resolved asks instead of passing", () => {
+    const unknown = resolved("edit", ["src/a.ts"], [null])
+
+    expect(unknown.rule_id).toBe("SEC.V1.UNKNOWN_TARGET")
+    expect(unknown.decision).toBe("ask")
+  })
+
+  test("resolution is matched to its own pattern, not the first one", () => {
+    const mixed = resolved("edit", ["src/a.ts", "foo"], ["/w/src/a.ts", "/w/.git/hooks/pre-commit"])
+
+    expect(mixed.rule_id).toBe("SEC.V1.GIT_HOOK_WRITE")
+  })
+
+  test("a shell effect is judged by its resolved target too", () => {
+    const link = shell("echo x >> foo", [{ operation: "update", path: "/w/.git/hooks/pre-commit" }])
+
+    expect(link.rule_id).toBe("SEC.V1.GIT_HOOK_WRITE")
+    expect(link.decision).toBe("deny")
+  })
+})
+
+/**
+ * Control-plane files do not execute themselves, but writing them installs code that later runs:
+ * `core.hooksPath`, filter drivers, direnv. They ask rather than deny — a human routinely edits
+ * `.gitattributes`, and the shell route cannot see `git config`, so denying here would create a new
+ * asymmetry instead of closing one.
+ */
+describe("control-plane paths", () => {
+  test.each([
+    [".git/config"],
+    [".gitattributes"],
+    ["packages/app/.gitattributes"],
+    [".git/info/attributes"],
+    [".envrc"],
+  ])("writing %s asks", (target) => {
+    const write = structured("edit", [target])
+
+    expect(write.rule_id).toBe("SEC.V1.CONTROL_PLANE_WRITE")
+    expect(write.decision).toBe("ask")
+  })
+
+  test("reading a control-plane file keeps no opinion", () => {
+    expect(structured("read", [".gitattributes"]).rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test("deleting a control-plane file still asks", () => {
+    const removed = shell("rm .git/config", [{ operation: "delete", path: "/w/.git/config" }])
+
+    expect(removed.decision).toBe("ask")
+  })
+
+  test("an unclear operation on a control-plane file asks", () => {
+    const unclear = structured("external_directory", [".envrc"])
+
+    expect(unclear.rule_id).toBe("SEC.V1.AMBIGUOUS_OPERATION")
+  })
+})

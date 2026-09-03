@@ -13,7 +13,15 @@ export namespace SecurityDecisionTypes {
   export type Authority = "hard" | "xdg_global" | "untrusted" | "unknown"
 
   /** Sensitivity class of a normalized path. `unknown` blocks any multi-target allow. */
-  export type PathClass = "ordinary" | "sensitive" | "git_hook" | "ci" | "package_manifest" | "root" | "unknown"
+  export type PathClass =
+    | "ordinary"
+    | "sensitive"
+    | "git_hook"
+    | "control_plane"
+    | "ci"
+    | "package_manifest"
+    | "root"
+    | "unknown"
 
   export type PathFact = Readonly<{
     path: string
