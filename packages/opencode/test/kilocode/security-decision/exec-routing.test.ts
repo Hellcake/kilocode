@@ -69,13 +69,15 @@ describe("unclassified shell actions", () => {
 })
 
 describe("deterministically benign shell actions", () => {
+  // Only verbs that emit names and metadata are inert. `diff`, `log`, `show` and `blame` print file
+  // contents, so they are covered by the adversarial suite in inert-git.test.ts instead.
   test.each([
     ["git status"],
     ["git status --short"],
-    ["git diff --stat"],
-    ["git log --oneline -n 5"],
-    ["git show HEAD"],
+    ["git status -sb"],
     ["git rev-parse HEAD"],
+    ["git rev-parse --show-toplevel"],
+    ["git ls-files --others --exclude-standard"],
     ["ls -la"],
     ["pwd"],
     ["echo hello"],
@@ -94,10 +96,13 @@ describe("deterministically benign shell actions", () => {
     expect(out.rule_id).toBe("SEC.V1.NO_OPINION")
   })
 
-  test("a mutating git subcommand is not benign", () => {
+  test("a mutating or content-printing git subcommand is not benign", () => {
     expect(shell("git commit -m x").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
     expect(shell("git config core.hooksPath .githooks").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
     expect(shell("git").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(shell("git diff --stat").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(shell("git log --oneline -n 5").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(shell("git show HEAD").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
   })
 })
 

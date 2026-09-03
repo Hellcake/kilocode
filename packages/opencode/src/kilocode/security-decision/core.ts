@@ -36,21 +36,118 @@ export namespace SecurityDecision {
     "whoami",
   ])
 
-  /** Tools whose safety is decided by the verb rather than the binary. */
-  const INERT_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
-    git: new Set(["blame", "describe", "diff", "log", "ls-files", "rev-parse", "show", "status"]),
+  /**
+   * git is allowlisted by verb *and* arguments, never by verb alone.
+   *
+   * A read-only sounding verb is not evidence of anything: `show`, `diff`, `log` and `blame` all
+   * print file contents, so `git show HEAD:.env` would read a secret that a direct `read` asks for.
+   * Git also reprograms itself from its arguments — `--git-dir` and `--work-tree` move the operation
+   * to another repository, `-C` moves the working directory, and `-c` sets configuration that can
+   * name a program to run (pager, external diff, textconv filter). So only verbs that emit names and
+   * metadata are listed, every global flag but two is refused, and any argument the verb does not
+   * explicitly allow fails closed.
+   */
+  const GIT_GLOBALS = new Set(["--no-pager", "--no-optional-locks"])
+
+  type GitVerb = Readonly<{ flags: ReadonlySet<string>; short: ReadonlySet<string> }>
+
+  const GIT_VERBS: Record<string, GitVerb> = {
+    /** Names, branch and working-tree state. No file contents. */
+    status: {
+      flags: new Set([
+        "--",
+        "--branch",
+        "--ignore-submodules",
+        "--long",
+        "--no-renames",
+        "--porcelain",
+        "--short",
+        "--untracked-files",
+        "-b",
+        "-s",
+        "-u",
+        "-uall",
+        "-uno",
+        "-unormal",
+        "-z",
+      ]),
+      short: new Set(["b", "s", "z"]),
+    },
+    /** Revision and repository-layout resolution. Prints refs and paths. */
+    "rev-parse": {
+      flags: new Set([
+        "--",
+        "--abbrev-ref",
+        "--git-common-dir",
+        "--git-dir",
+        "--is-bare-repository",
+        "--is-inside-work-tree",
+        "--quiet",
+        "--short",
+        "--show-cdup",
+        "--show-prefix",
+        "--show-toplevel",
+        "--symbolic",
+        "--symbolic-full-name",
+        "--verify",
+        "-q",
+      ]),
+      short: new Set(["q"]),
+    },
+    /** Tracked path names. */
+    "ls-files": {
+      flags: new Set([
+        "--",
+        "--cached",
+        "--deleted",
+        "--exclude-standard",
+        "--full-name",
+        "--modified",
+        "--others",
+        "--stage",
+        "-c",
+        "-d",
+        "-m",
+        "-o",
+        "-s",
+        "-z",
+      ]),
+      short: new Set(["c", "d", "m", "o", "s", "z"]),
+    },
   }
 
-  /** True only for a command proven inert. An unnamed executable is never inert. */
+  /** A token is acceptable when it is not a flag, or is a flag the verb explicitly allows. */
+  function acceptable(token: string, verb: GitVerb) {
+    if (!token.startsWith("-")) return true
+    const head = token.includes("=") ? token.slice(0, token.indexOf("=")) : token
+    if (verb.flags.has(head)) return true
+    // Clustered short flags such as `-sb`, drawn only from the verb's own letters.
+    if (/^-[a-zA-Z]{2,}$/.test(token)) return [...token.slice(1)].every((letter) => verb.short.has(letter))
+    return false
+  }
+
+  function inertGit(argv: readonly string[]) {
+    let index = 1
+    // Global flags sit before the verb, and almost all of them can redirect or reprogram the run.
+    while (index < argv.length && argv[index]!.startsWith("-")) {
+      if (!GIT_GLOBALS.has(argv[index]!)) return false
+      index++
+    }
+    const name = argv[index]
+    if (name === undefined) return false
+    const verb = GIT_VERBS[name]
+    if (!verb) return false
+    return argv.slice(index + 1).every((token) => acceptable(token, verb))
+  }
+
+  /** True only for a command proven inert here. An unnamed executable is never inert. */
   function inert(exec: SecurityDecisionTypes.ExecFact) {
     const name = exec.executable
     if (!name) return false
     if (INERT.has(name)) return true
-    const verbs = INERT_SUBCOMMANDS[name]
-    if (!verbs) return false
-    // The first argument that is not a flag is the verb; anything else fails closed.
-    const verb = exec.argv?.slice(1).find((token) => !token.startsWith("-"))
-    return verb !== undefined && verbs.has(verb)
+    if (name !== "git") return false
+    // Without the parsed command line there is nothing to prove anything against.
+    return exec.argv !== undefined && exec.argv.length > 0 && inertGit(exec.argv)
   }
 
   function target(input: SecurityDecisionTypes.Input, fact: SecurityDecisionTypes.PathFact): R.Entry {
