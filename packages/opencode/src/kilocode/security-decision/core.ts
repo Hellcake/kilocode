@@ -15,7 +15,8 @@ export namespace SecurityDecision {
   const DESTRUCTIVE = new Set(["delete", "move"])
 
   function target(input: SecurityDecisionTypes.Input, fact: SecurityDecisionTypes.PathFact): R.Entry {
-    const op = input.action.operation
+    // A shell command can read one target and write another, so a fact's own operation wins.
+    const op = fact.operation ?? input.action.operation
     const exec = input.action.exec
 
     // Exact, fully parsed destruction of a root/device target — the narrow soft-path deny.

@@ -123,7 +123,8 @@ describe("bash permission metadata.securityFacts", () => {
   }
 
   test("reports a single simple command as complete, uncomposed and named", async () => {
-    expect(await facts("echo hello")).toEqual({ complete: true, composed: false, executable: "echo" })
+    // kilocode_change - the facts now also carry the scan's structured file effects; none here
+    expect(await facts("echo hello")).toEqual({ complete: true, composed: false, executable: "echo", effects: [] })
   })
 
   test.skipIf(process.platform === "win32")("marks a pipeline as composed", async () => {

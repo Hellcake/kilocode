@@ -21,6 +21,11 @@ export namespace SecurityDecisionTypes {
     class: PathClass
     /** Which region of a structured file the change touches, when the adapter could determine it. */
     region?: "scripts" | "dependencies" | "other"
+    /**
+     * Operation for this target specifically. One shell command can read one file and write another,
+     * so a fact may override the action-wide operation. Structured file tools leave it unset.
+     */
+    operation?: string
   }>
 
   export type ExecFact = Readonly<{

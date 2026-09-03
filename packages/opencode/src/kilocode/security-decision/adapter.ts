@@ -103,6 +103,11 @@ export namespace SecurityDecisionAdapter {
     return value === "1" || value === "true"
   }
 
+  /** Device nodes that discard or echo output rather than persisting a file. */
+  const SINKS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero"])
+
+  const OPERATIONS = new Set(["read", "update", "delete", "move"])
+
   function posix(value: string) {
     return value.replaceAll("\\", "/")
   }
@@ -116,6 +121,9 @@ export namespace SecurityDecisionAdapter {
     const relative = absolute ? path.posix.relative(posix(workspace), normalized) : normalized
     const inWorkspace = !relative.startsWith("../") && relative !== ".." && !(absolute && relative === normalized)
 
+    // `> /dev/null` is the canonical discard, not a device write, and nothing persists past the
+    // process — so it is neither a root target nor a boundary crossing. Other device nodes stay root.
+    if (SINKS.has(normalized)) return { path: normalized, inWorkspace: true, class: "ordinary" }
     if (normalized === "/" || normalized.startsWith("/dev/"))
       return { path: normalized, inWorkspace: false, class: "root" }
 
@@ -183,6 +191,30 @@ export namespace SecurityDecisionAdapter {
     }
   }
 
+  /**
+   * File effects the shell scan extracted, normalized into path facts so a shell route reaches the
+   * same rules as `edit`/`write`/`read`. An effect without a path is a target the scan could not
+   * determine: it becomes an `unknown` fact, which the core holds at ask.
+   */
+  function effects(request: Request, workspace: string): T.PathFact[] {
+    const facts = request.metadata?.["securityFacts"]
+    if (!facts || typeof facts !== "object") return []
+    const list = (facts as { effects?: unknown }).effects
+    if (!Array.isArray(list)) return []
+    const out: T.PathFact[] = []
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue
+      const value = item as { operation?: unknown; path?: unknown }
+      if (typeof value.operation !== "string" || !OPERATIONS.has(value.operation)) continue
+      if (typeof value.path !== "string" || value.path.length === 0) {
+        out.push({ path: "", inWorkspace: false, class: "unknown", operation: value.operation })
+        continue
+      }
+      out.push({ ...classify(value.path, workspace), operation: value.operation })
+    }
+    return out
+  }
+
   /** MCP asks arrive as an unregistered permission name with a `*` pattern and empty metadata. */
   function delegated(request: Request) {
     return !KNOWN.has(request.permission)
@@ -190,10 +222,13 @@ export namespace SecurityDecisionAdapter {
 
   function toInput(request: Request, ctx: Context): T.Input {
     const kind = delegated(request) ? "mcp" : request.permission
+    // Shell patterns are commands, not paths: its targets come from the scan's structured effects.
     const paths =
-      EXECS.has(request.permission) || kind === "mcp"
+      kind === "mcp"
         ? []
-        : request.patterns.map((pattern) => classify(pattern, ctx.workspace))
+        : EXECS.has(request.permission)
+          ? effects(request, ctx.workspace)
+          : request.patterns.map((pattern) => classify(pattern, ctx.workspace))
     const facts = exec(request)
     const complete = !EXECS.has(request.permission) || facts !== undefined
     return {
