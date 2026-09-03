@@ -1,0 +1,41 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "hook-read-ambiguous",
+  "engine": "security-decision/v1",
+  "family": "policy-boundary",
+  "tags": ["regression", "replay-only"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "edit",
+      "operation": "read",
+      "paths": [
+        {
+          "path": "src/message.txt",
+          "inWorkspace": true,
+          "class": "git_hook"
+        }
+      ]
+    },
+    "baseline": {
+      "decision": "allow",
+      "authority": "untrusted",
+      "humanOnly": false
+    },
+    "metadata": {
+      "complete": true,
+      "truncated": false
+    },
+    "containment": {
+      "sandbox": "off",
+      "network": "allow",
+      "destinations": [],
+      "escalated": false
+    }
+  },
+  "expected": {
+    "decision": "ask",
+    "rule_id": "SEC.V1.AMBIGUOUS_OPERATION"
+  }
+}

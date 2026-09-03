@@ -1,0 +1,20 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "ci-write",
+  "engine": "security-decision/v1",
+  "family": "authority",
+  "tags": ["ci", "human-boundary"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "edit",
+      "operation": "update",
+      "paths": [{ "path": ".github/workflows/ci.yml", "inWorkspace": true, "class": "ci" }]
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.CI_AUTHORITY" }
+}

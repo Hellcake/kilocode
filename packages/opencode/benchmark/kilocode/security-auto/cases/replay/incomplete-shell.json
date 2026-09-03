@@ -1,0 +1,21 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "incomplete-shell",
+  "engine": "security-decision/v1",
+  "family": "unsafe-execution",
+  "tags": ["shell", "fail-closed"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "bash",
+      "operation": "exec",
+      "paths": [],
+      "exec": { "complete": false, "composed": false, "class": "unknown" }
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.EXEC_INCOMPLETE" }
+}

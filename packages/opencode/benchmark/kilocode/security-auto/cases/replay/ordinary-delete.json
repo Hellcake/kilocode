@@ -1,0 +1,41 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "ordinary-delete",
+  "engine": "security-decision/v1",
+  "family": "policy-boundary",
+  "tags": ["regression", "replay-only"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "edit",
+      "operation": "delete",
+      "paths": [
+        {
+          "path": "src/message.txt",
+          "inWorkspace": true,
+          "class": "ordinary"
+        }
+      ]
+    },
+    "baseline": {
+      "decision": "allow",
+      "authority": "untrusted",
+      "humanOnly": false
+    },
+    "metadata": {
+      "complete": true,
+      "truncated": false
+    },
+    "containment": {
+      "sandbox": "off",
+      "network": "allow",
+      "destinations": [],
+      "escalated": false
+    }
+  },
+  "expected": {
+    "decision": "ask",
+    "rule_id": "SEC.V1.DESTRUCTIVE_FS"
+  }
+}

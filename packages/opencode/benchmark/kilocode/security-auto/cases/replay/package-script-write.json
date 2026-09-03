@@ -1,0 +1,20 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "package-script-write",
+  "engine": "security-decision/v1",
+  "family": "package-execution",
+  "tags": ["package-json", "authority"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "edit",
+      "operation": "update",
+      "paths": [{ "path": "package.json", "inWorkspace": true, "class": "package_manifest", "region": "scripts" }]
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.PACKAGE_EXECUTION" }
+}

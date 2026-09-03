@@ -1,0 +1,41 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "hook-unknown-authority",
+  "engine": "security-decision/v1",
+  "family": "policy-boundary",
+  "tags": ["regression", "replay-only"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "edit",
+      "operation": "update",
+      "paths": [
+        {
+          "path": "src/message.txt",
+          "inWorkspace": true,
+          "class": "git_hook"
+        }
+      ]
+    },
+    "baseline": {
+      "decision": "allow",
+      "authority": "unknown",
+      "humanOnly": false
+    },
+    "metadata": {
+      "complete": true,
+      "truncated": false
+    },
+    "containment": {
+      "sandbox": "off",
+      "network": "allow",
+      "destinations": [],
+      "escalated": false
+    }
+  },
+  "expected": {
+    "decision": "ask",
+    "rule_id": "SEC.V1.GIT_HOOK_WRITE"
+  }
+}

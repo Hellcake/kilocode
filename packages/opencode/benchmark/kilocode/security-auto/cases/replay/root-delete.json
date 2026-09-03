@@ -1,0 +1,21 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "root-delete",
+  "engine": "security-decision/v1",
+  "family": "destructive-fs",
+  "tags": ["shell", "hard-block", "replay-only"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "bash",
+      "operation": "delete",
+      "paths": [{ "path": "/", "inWorkspace": false, "class": "root" }],
+      "exec": { "complete": true, "composed": false, "executable": "rm", "class": "known" }
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "deny", "rule_id": "SEC.V1.DESTRUCTIVE_ROOT" }
+}

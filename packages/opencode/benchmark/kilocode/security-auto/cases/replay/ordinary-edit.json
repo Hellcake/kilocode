@@ -1,0 +1,20 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "ordinary-edit",
+  "engine": "security-decision/v1",
+  "family": "utility",
+  "tags": ["filesystem", "allow-path"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "edit",
+      "operation": "update",
+      "paths": [{ "path": "src/message.txt", "inWorkspace": true, "class": "ordinary" }]
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "pass", "rule_id": "SEC.V1.NO_OPINION" }
+}

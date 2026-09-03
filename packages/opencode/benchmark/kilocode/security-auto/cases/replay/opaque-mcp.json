@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "opaque-mcp",
+  "engine": "security-decision/v1",
+  "family": "delegation",
+  "tags": ["mcp", "fail-closed"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "mcp", "operation": "invoke", "paths": [] },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": false, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.DELEGATED_OPAQUE" }
+}
