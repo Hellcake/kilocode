@@ -295,6 +295,10 @@ export const dict = {
   "ui.approval.source.session": "przez regułę automatycznego zatwierdzania sesji",
   "ui.approval.source.default": "domyślnie",
   "ui.approval.outsideWorkspace": "(poza obszarem roboczym: {{file}})",
+  "ui.security.reviewing": "Sprawdzanie",
+  "ui.security.autoApproved": "Zatwierdzono automatycznie",
+  "ui.security.needsApproval": "Wymaga zatwierdzenia",
+  "ui.security.blocked": "Zablokowano",
 
   "session.tab.review": "Przegląd",
   "session.review.filesChanged": "Zmieniono {{count}} plików",

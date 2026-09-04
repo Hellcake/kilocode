@@ -301,6 +301,10 @@ export const dict = {
   "ui.approval.source.session": "av en økt-autogodkjenningsregel",
   "ui.approval.source.default": "som standard",
   "ui.approval.outsideWorkspace": "(utenfor arbeidsområdet ditt: {{file}})",
+  "ui.security.reviewing": "Gjennomgår",
+  "ui.security.autoApproved": "Automatisk godkjent",
+  "ui.security.needsApproval": "Krever godkjenning",
+  "ui.security.blocked": "Blokkert",
 
   "session.tab.review": "Gjennomgang",
   "session.review.filesChanged": "{{count}} filer endret",

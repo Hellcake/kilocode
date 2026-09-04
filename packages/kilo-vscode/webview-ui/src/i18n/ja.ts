@@ -294,6 +294,10 @@ export const dict = {
   "ui.approval.source.session": "セッションの自動承認ルールによって",
   "ui.approval.source.default": "デフォルトで",
   "ui.approval.outsideWorkspace": "（ワークスペース外：{{file}}）",
+  "ui.security.reviewing": "確認中",
+  "ui.security.autoApproved": "自動承認",
+  "ui.security.needsApproval": "承認が必要",
+  "ui.security.blocked": "ブロック済み",
 
   "session.tab.review": "レビュー",
   "session.review.filesChanged": "{{count}} ファイル変更",

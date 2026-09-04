@@ -302,6 +302,10 @@ export const dict = {
   "ui.approval.source.session": "durch eine Sitzungs-Auto-Genehmigungsregel",
   "ui.approval.source.default": "standardmäßig",
   "ui.approval.outsideWorkspace": "(außerhalb deines Arbeitsbereichs: {{file}})",
+  "ui.security.reviewing": "Wird geprüft",
+  "ui.security.autoApproved": "Automatisch genehmigt",
+  "ui.security.needsApproval": "Genehmigung nötig",
+  "ui.security.blocked": "Blockiert",
 
   "session.tab.review": "Überprüfung",
   "session.review.filesChanged": "{{count}} Dateien geändert",
