@@ -15,11 +15,20 @@ import type { SecurityDecisionTypes as T } from "./types"
  * frames it as data and any response that is not an exact verdict is treated as `keep_ask`.
  */
 export namespace SecurityReviewer {
-  export type State = "not_run" | "allow" | "keep_ask" | "timeout" | "error"
+  /**
+   * The agent identity the reviewer runs under. It is a service of the policy layer rather than a
+   * turn of the user's conversation, and other subsystems key off that distinction — session export
+   * excludes it, because its prompt carries the command line under review.
+   */
+  export const AGENT = "security-reviewer" as const
+
+  /** `running` is emitted while the model is being asked, so a caller can tell it apart from `not_run`. */
+  export type State = "not_run" | "running" | "allow" | "keep_ask" | "timeout" | "error"
 
   export type Outcome = Readonly<{ state: State; reason_code?: string; latency_ms?: number }>
 
   export const SKIPPED: Outcome = { state: "not_run" }
+  export const RUNNING: Outcome = { state: "running" }
 
   /** Bounds on the command line handed to the model, so one call cannot blow up the context. */
   const MAX_ARGV = 32
@@ -65,9 +74,12 @@ export namespace SecurityReviewer {
   export type Complete = (prompt: { system: string; user: string }) => Promise<string>
 
   let complete: Complete | undefined
+  /** The deadline the trusted configuration chose for this binding. */
+  let deadline: number | undefined
 
-  export function bind(fn: Complete | undefined) {
+  export function bind(fn: Complete | undefined, timeout?: number) {
     complete = fn
+    deadline = timeout
   }
 
   export function bound() {
@@ -77,6 +89,7 @@ export namespace SecurityReviewer {
   /** Test seam and shutdown hook: the binding is otherwise process-lifetime. */
   export function reset() {
     complete = undefined
+    deadline = undefined
   }
 
   function long(value: string | undefined, max: number) {
@@ -231,7 +244,9 @@ export namespace SecurityReviewer {
 
     const started = Date.now()
     const fn = complete
-    const settled = yield* Effect.promise(() => settle(fn, prompt(input), options?.timeout ?? DEFAULT_TIMEOUT))
+    const settled = yield* Effect.promise(() =>
+      settle(fn, prompt(input), options?.timeout ?? deadline ?? DEFAULT_TIMEOUT),
+    )
 
     const latency_ms = Date.now() - started
     if (settled.state === "timeout") return { result, outcome: { state: "timeout" as const, latency_ms } }
