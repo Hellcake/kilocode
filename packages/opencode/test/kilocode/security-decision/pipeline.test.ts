@@ -656,3 +656,69 @@ it.instance("keeps ordinary reject semantics for a security ask a baseline ask a
   }),
 )
 // kilocode_change end
+
+/**
+ * A refusal has to close the audit too.
+ *
+ * An ask the ordinary pipeline raised fails its effect when it is refused, and the security record
+ * written before the prompt was published is the last one anyone sees. Left at `ask_pending` it
+ * reads, forever, as a call still waiting for a human — on a call that will never run again.
+ */
+it.instance("closes the audit when an ordinary ask is refused by a human", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    const permission = yield* Permission.Service
+    const records: SecurityDecisionAdapter.Audit[] = []
+
+    const fiber = yield* ask({
+      ...npmTest,
+      ruleset: [{ permission: "bash", pattern: "*", action: "ask" as const }],
+      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      audit: (record) => Effect.sync(() => void records.push(record)),
+    }).pipe(Effect.exit, Effect.forkScoped)
+
+    const pending = yield* Effect.gen(function* () {
+      while (true) {
+        const list = yield* permission.list()
+        if (list.length === 1) return list
+        yield* Effect.sleep("10 millis")
+      }
+    }).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("timed out")) }))
+
+    yield* permission.reply({ requestID: pending[0]!.id, reply: "reject", interactive: true })
+    yield* Fiber.join(fiber)
+
+    const last = records[records.length - 1]
+    expect(last?.final_enforcement).toBe("reject")
+    expect(last?.enforcement_source).toBe("manual")
+  }),
+)
+
+it.instance("records a refusal nobody saw as blocked, not as a human refusal", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    const permission = yield* Permission.Service
+    const records: SecurityDecisionAdapter.Audit[] = []
+
+    const fiber = yield* ask({
+      ...npmTest,
+      ruleset: [{ permission: "bash", pattern: "*", action: "ask" as const }],
+      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      audit: (record) => Effect.sync(() => void records.push(record)),
+    }).pipe(Effect.exit, Effect.forkScoped)
+
+    const pending = yield* Effect.gen(function* () {
+      while (true) {
+        const list = yield* permission.list()
+        if (list.length === 1) return list
+        yield* Effect.sleep("10 millis")
+      }
+    }).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("timed out")) }))
+
+    yield* permission.reply({ requestID: pending[0]!.id, reply: "reject" })
+    yield* Fiber.join(fiber)
+
+    const last = records[records.length - 1]
+    expect(last?.final_enforcement).toBe("blocked")
+  }),
+)

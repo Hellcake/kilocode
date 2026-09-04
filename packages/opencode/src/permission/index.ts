@@ -402,6 +402,21 @@ const layer = Layer.effect(
         Effect.sync(() => {
           pending.delete(id)
         }),
+      ).pipe(
+        // kilocode_change - a refusal ends this effect, so the audit has to be closed on the way out.
+        // The record written before the prompt was published says `ask_pending`, and leaving it there
+        // reports a call that will never run again as one still waiting for a human.
+        Effect.tapError(() =>
+          security && audit
+            ? audit(
+                SecurityDecisionAdapter.finalize(
+                  security.audit,
+                  entry.rejection?.interactive ? "reject" : "blocked",
+                  entry.rejection?.interactive ? "manual" : "auto",
+                ),
+              ).pipe(Effect.catchCause(() => Effect.void))
+            : Effect.void,
+        ),
       )
       // kilocode_change - the audit names the same answerer the approval marker does
       const answered = entry.approval?.interactive === true
