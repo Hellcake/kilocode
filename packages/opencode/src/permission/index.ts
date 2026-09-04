@@ -376,12 +376,15 @@ const layer = Layer.effect(
             pending.delete(id)
           }),
         ).pipe(Effect.exit)
-        if (Exit.isSuccess(exit))
+        if (Exit.isSuccess(exit)) {
+          // kilocode_change - the audit names the same answerer the approval marker does
+          const answered = entry.approval?.interactive === true
           return {
             manual: true,
-            interactive: entry.approval?.interactive === true, // kilocode_change
-            security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual"),
+            interactive: answered,
+            security: SecurityDecisionAdapter.finalize(security.audit, "allow", answered ? "manual" : "auto"),
           }
+        }
         // Only an answered rejection is enforcement; a session teardown keeps its existing semantics.
         if (!entry.rejection) return yield* Effect.failCause(exit.cause)
         const record = SecurityDecisionAdapter.finalize(
@@ -400,10 +403,14 @@ const layer = Layer.effect(
           pending.delete(id)
         }),
       )
+      // kilocode_change - the audit names the same answerer the approval marker does
+      const answered = entry.approval?.interactive === true
       return {
         manual: true,
-        interactive: entry.approval?.interactive === true, // kilocode_change
-        ...(security ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") } : {}),
+        interactive: answered,
+        ...(security
+          ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", answered ? "manual" : "auto") }
+          : {}),
       } // the user was prompted and replied
       // kilocode_change end
     })

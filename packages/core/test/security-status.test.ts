@@ -47,6 +47,18 @@ describe("SecurityStatus.from", () => {
     expect(out?.kind).toBe("needs-approval")
   })
 
+  test("a call auto mode answered still shows the reviewer's work", () => {
+    // Auto mode replying on the user's behalf is not a human decision, so the badge stands.
+    const out = SecurityStatus.from(
+      record(
+        { state: "allow", reason_code: "SAFE_DEVELOPMENT_COMMAND", latency_ms: 895 },
+        { final_enforcement: "allow", enforcement_source: "auto" },
+      ),
+    )
+
+    expect(out?.kind).toBe("auto-approved")
+  })
+
   test("a call the human approved is not reported as auto-approved", () => {
     const out = SecurityStatus.from(
       record({ state: "allow" }, { final_enforcement: "allow", enforcement_source: "manual" }),

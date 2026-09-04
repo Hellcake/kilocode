@@ -275,6 +275,37 @@ it.instance("does not let the reviewer overrule the user's own ask policy", () =
   }),
 )
 
+// The audit and the approval marker describe the same event and must agree on who answered:
+// auto mode replying on the user's behalf is not the user, in either record.
+it.instance("records an auto-mode reply as auto, not as a human decision", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    SecurityReviewer.bind(() => Promise.resolve('{"decision":"allow","reason_code":"ORDINARY_DEV_COMMAND"}'))
+    const permission = yield* Permission.Service
+
+    const fiber = yield* ask({
+      ...npmTest,
+      ruleset: [{ permission: "bash", pattern: "*", action: "ask" as const }],
+      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+    }).pipe(Effect.forkScoped)
+
+    const pending = yield* Effect.gen(function* () {
+      while (true) {
+        const list = yield* permission.list()
+        if (list.length === 1) return list
+        yield* Effect.sleep("10 millis")
+      }
+    }).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("timed out")) }))
+
+    // Exactly what auto mode sends: a reply with no `interactive` flag.
+    yield* permission.reply({ requestID: pending[0]!.id, reply: "once" })
+    const outcome = yield* Fiber.join(fiber)
+
+    expect(outcome.security?.final_enforcement).toBe("allow")
+    expect(outcome.security?.enforcement_source).toBe("auto")
+  }),
+)
+
 it.instance("still raises a security-marked ask for the same command without proven confinement", () =>
   Effect.gen(function* () {
     process.env["KILO_SECURITY_DECISION"] = "1"
