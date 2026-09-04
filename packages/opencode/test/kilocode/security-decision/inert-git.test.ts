@@ -43,6 +43,17 @@ const asks = (command: string) => {
   expect(out.reviewable).toBe(true)
 }
 
+/** The argument itself is the sensitive thing, so the path rule names the ask rather than the exec one. */
+const asksSensitive = (command: string) => {
+  const out = shell(command)
+  expect({ command, rule: out.rule_id, decision: out.decision }).toEqual({
+    command,
+    rule: "SEC.V1.SENSITIVE_BOUNDARY",
+    decision: "ask",
+  })
+  expect(out.reviewable).toBe(false)
+}
+
 const passes = (command: string) => {
   const out = shell(command)
   expect({ command, rule: out.rule_id, decision: out.decision }).toEqual({
@@ -57,15 +68,20 @@ describe("git cannot be used to read content that a direct read would ask for", 
     ["git show HEAD:.env"],
     ["git show :0:.env"],
     ["git show HEAD"],
-    ["git diff -- .env"],
     ["git diff"],
-    ["git diff --stat"],
-    ["git blame .env"],
     ["git blame src/a.ts"],
-    ["git log -p -- .env"],
-    ["git log --oneline"],
-    ["git log"],
+    ["git log -p"],
+    ["git log -u"],
+    ["git log --patch"],
+    ["git log -G secret"],
+    ["git log -S secret"],
+    ["git diff --stat --output=/tmp/x"],
   ])("%s asks", (command) => asks(command))
+
+  test.each([["git diff -- .env"], ["git blame .env"], ["git log -p -- .env"]])(
+    "%s asks on the path itself",
+    (command) => asksSensitive(command),
+  )
 
   test("the direct route asks too, so the two agree", () => {
     const read = SecurityDecisionAdapter.evaluate(
@@ -81,13 +97,15 @@ describe("git flags that move or reprogram the operation are never inert", () =>
   test.each([
     ["git --git-dir=/elsewhere/.git status"],
     ["git --work-tree=/outside status"],
-    ["git -C /outside status"],
     ["git -c core.pager=curl status"],
     ["git -c diff.external=/tmp/x status"],
     ["git --exec-path=/tmp status"],
     ["git --namespace=x status"],
     ["git -P status"],
   ])("%s asks", (command) => asks(command))
+
+  test("a redirected working directory is an out-of-workspace path in its own right", () =>
+    asksSensitive("git -C /outside status"))
 })
 
 describe("unknown or content-bearing arguments fail closed", () => {
@@ -123,6 +141,99 @@ describe("the provable dev flow still passes", () => {
     ["git ls-files --others --exclude-standard"],
     ["git ls-files -z"],
   ])("%s passes", (command) => passes(command))
+})
+
+/**
+ * History and branch names are metadata, not file contents: `git log` prints commit messages and
+ * `--stat`-family output prints names and counts. The content-bearing flags of the same verbs
+ * (`-p`, `-G`, `-S`) stay outside the allowlist, and `diff`/`show` — whose default output *is* the
+ * patch — are inert only when a name-only flag is present.
+ */
+describe("history and name-only reporting passes", () => {
+  test.each([
+    ["git log"],
+    ["git log --oneline"],
+    ["git log --oneline -20"],
+    ["git log -n 5"],
+    ["git log --stat"],
+    ["git log --name-only"],
+    ["git log --pretty=format:%h"],
+    ["git log --graph --decorate --oneline"],
+    ["git log -- src"],
+    ["git diff --stat"],
+    ["git diff --name-only"],
+    ["git diff --name-status HEAD"],
+    ["git show --stat HEAD"],
+    ["git show --name-only HEAD"],
+    ["git show --stat"],
+    ["git branch"],
+    ["git branch -a"],
+    ["git branch --list"],
+    ["git --no-pager log --oneline"],
+  ])("%s passes", (command) => passes(command))
+
+  test.each([
+    ["git show HEAD"],
+    ["git show"],
+    ["git branch -d topic"],
+    ["git branch -D topic"],
+    ["git branch -m old new"],
+    ["git branch --edit-description"],
+    ["git log --ext-diff"],
+    ["git log --output=/tmp/x"],
+  ])("%s asks", (command) => asks(command))
+})
+
+/**
+ * Confinement is evidence about *reach* — writes and network — and the command's own output still
+ * flows back to the model. So it cannot stand in for an allowlist the layer already applied and
+ * refused: a git invocation that failed the verb/argument check is a known negative, not an unknown
+ * command, and letting containment re-admit it would reopen the exact route this file closes.
+ */
+describe("containment does not re-admit a refused git invocation", () => {
+  const confined: SecurityDecisionAdapter.Context = {
+    ...ctx,
+    containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+  }
+
+  const inConfinement = (command: string) => {
+    const argv = command.split(/\s+/)
+    return SecurityDecisionAdapter.evaluate(
+      {
+        permission: "bash",
+        patterns: [command],
+        metadata: {
+          securityFacts: { complete: true, composed: false, executable: argv[0], argv, effects: [], classified: false },
+        },
+        sessionID: "ses_inert",
+      },
+      confined,
+    )
+  }
+
+  test.each([
+    ["git show HEAD:.env"],
+    ["git log -p"],
+    ["git diff"],
+    ["git config core.hooksPath ./hooks"],
+    ["git push --force"],
+    ["git --git-dir=/elsewhere/.git status"],
+  ])("%s still asks inside a proven sandbox", (command) => {
+    const out = inConfinement(command)
+    expect({ command, rule: out.rule_id, decision: out.decision }).toEqual({
+      command,
+      rule: "SEC.V1.UNCLASSIFIED_EXEC",
+      decision: "ask",
+    })
+  })
+
+  test("a git invocation the allowlist accepts still passes", () => {
+    expect(inConfinement("git status").rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test("a command the layer has no allowlist for is still contained evidence", () => {
+    expect(inConfinement("npm test").rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+  })
 })
 
 describe("deterministic path rules still outrank the inert allowlist", () => {

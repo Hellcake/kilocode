@@ -123,13 +123,16 @@ describe("bash permission metadata.securityFacts", () => {
   }
 
   test("reports a single simple command as complete, uncomposed and named", async () => {
-    // kilocode_change - the facts now also carry the scan's file effects and the parsed command line
+    // kilocode_change - the facts also carry the scan's file effects, the parsed command line and
+    // the per-command view a sequence is judged by; a single command is one unit of that view.
     expect(await facts("echo hello")).toEqual({
       complete: true,
       composed: false,
+      decomposable: true,
       executable: "echo",
       argv: ["echo", "hello"],
       classified: false,
+      commands: [{ executable: "echo", argv: ["echo", "hello"], classified: false }],
       effects: [],
     })
   })

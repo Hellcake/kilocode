@@ -192,6 +192,19 @@ export namespace SecurityDecisionAdapter {
     return "unknown"
   }
 
+  /** Bound on how many commands of one sequence the layer will reason about. */
+  const MAX_COMMANDS = 32
+
+  function unit(item: unknown): T.ExecCommandFact {
+    if (!item || typeof item !== "object") return {}
+    const value = item as { executable?: unknown; argv?: unknown; classified?: unknown }
+    return {
+      ...(typeof value.executable === "string" ? { executable: value.executable } : {}),
+      argv: Array.isArray(value.argv) ? value.argv.filter((token): token is string => typeof token === "string") : [],
+      classified: value.classified === true,
+    }
+  }
+
   function exec(request: Request): T.ExecFact | undefined {
     if (!EXECS.has(request.permission)) return undefined
     const facts = request.metadata?.["securityFacts"]
@@ -203,12 +216,17 @@ export namespace SecurityDecisionAdapter {
       executable?: unknown
       argv?: unknown
       classified?: unknown
+      decomposable?: unknown
+      commands?: unknown
     }
     const argv = Array.isArray(value.argv) ? value.argv.filter((item): item is string => typeof item === "string") : []
+    const commands = Array.isArray(value.commands) ? value.commands.slice(0, MAX_COMMANDS).map(unit) : undefined
     return {
       complete: value.complete === true,
       composed: value.composed === true,
       classified: value.classified === true,
+      decomposable: value.decomposable === true,
+      ...(commands ? { commands } : {}),
       argv,
       ...(typeof value.executable === "string"
         ? { executable: value.executable, class: "known" as const }
@@ -251,6 +269,39 @@ export namespace SecurityDecisionAdapter {
     return out
   }
 
+  /**
+   * Path facts read off the command line itself.
+   *
+   * The effect table only names files for executables the scan knows, so an unknown reader — `xxd`,
+   * `strings`, `openssl` — reports no effect at all. Confinement cannot settle those: the sandbox
+   * constrains writes and network, but the command's own output leaves it for the model context, so
+   * an argument that *names* sensitive material has to become a fact of its own.
+   *
+   * Only notable arguments are reported. An ordinary in-workspace path is what every build and test
+   * command carries and says nothing; a glob the classifier cannot resolve is not evidence of
+   * sensitivity either, and a URL is not a path however much its tail looks like one.
+   */
+  function argvPaths(facts: T.ExecFact | undefined, workspace: string): T.PathFact[] {
+    if (!facts) return []
+    const out: T.PathFact[] = []
+    const seen = new Set<string>()
+    for (const unit of facts.commands && facts.commands.length > 0 ? facts.commands : [facts]) {
+      // The executable's own name is not one of its arguments.
+      for (const token of (unit.argv ?? []).slice(1)) {
+        if (token.length === 0 || token.startsWith("-") || token.includes("://")) continue
+        // `@file` is how curl and friends spell "read this file", so the reference is the tail.
+        const fact = classify(token.startsWith("@") ? token.slice(1) : token, workspace)
+        if (fact.class === "unknown") continue
+        if (fact.class === "ordinary" && fact.inWorkspace) continue
+        if (seen.has(fact.path)) continue
+        seen.add(fact.path)
+        // Reading is the least the command can be doing with a path it names.
+        out.push({ ...fact, operation: "read" })
+      }
+    }
+    return out
+  }
+
   /** MCP asks arrive as an unregistered permission name with a `*` pattern and empty metadata. */
   function delegated(request: Request) {
     return !KNOWN.has(request.permission)
@@ -258,12 +309,14 @@ export namespace SecurityDecisionAdapter {
 
   function toInput(request: Request, ctx: Context): T.Input {
     const kind = delegated(request) ? "mcp" : request.permission
-    // Shell patterns are commands, not paths: its targets come from the scan's structured effects.
+    const facts = exec(request)
+    // Shell patterns are commands, not paths: its targets come from the scan's structured effects,
+    // plus the notable paths its own command line names.
     const paths =
       kind === "mcp"
         ? []
         : EXECS.has(request.permission)
-          ? effects(request, ctx.workspace)
+          ? [...effects(request, ctx.workspace), ...argvPaths(facts, ctx.workspace)]
           : (() => {
               // A symlink must be judged by what it points at, so the resolved target wins.
               const real = resolved(request)
@@ -271,7 +324,6 @@ export namespace SecurityDecisionAdapter {
               const region = SecurityManifest.region(request.metadata?.["diff"])
               return request.patterns.map((pattern, index) => classify(real?.[index] ?? pattern, ctx.workspace, region))
             })()
-    const facts = exec(request)
     const complete = !EXECS.has(request.permission) || facts !== undefined
     return {
       version: 1,
@@ -325,6 +377,7 @@ export namespace SecurityDecisionAdapter {
                 operation: input.action.operation,
                 ...(input.action.exec?.executable ? { executable: input.action.exec.executable } : {}),
                 argv: input.action.exec?.argv,
+                ...(input.action.exec?.commands ? { commands: input.action.exec.commands } : {}),
                 paths: input.action.paths,
                 containment: ctx.containment,
               }),

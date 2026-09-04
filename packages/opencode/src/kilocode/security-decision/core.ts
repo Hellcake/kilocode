@@ -49,7 +49,17 @@ export namespace SecurityDecision {
    */
   const GIT_GLOBALS = new Set(["--no-pager", "--no-optional-locks"])
 
-  type GitVerb = Readonly<{ flags: ReadonlySet<string>; short: ReadonlySet<string> }>
+  type GitVerb = Readonly<{
+    flags: ReadonlySet<string>
+    short: ReadonlySet<string>
+    /** At least one of these must be present. For verbs whose *default* output is a patch. */
+    require?: ReadonlySet<string>
+    /** Whether `-<count>` shorthand is part of the verb's own syntax. */
+    numeric?: boolean
+  }>
+
+  /** Flags that report names and counts instead of the patch itself. */
+  const NAME_ONLY = new Set(["--name-only", "--name-status", "--numstat", "--shortstat", "--stat"])
 
   const GIT_VERBS: Record<string, GitVerb> = {
     /** Names, branch and working-tree state. No file contents. */
@@ -94,6 +104,79 @@ export namespace SecurityDecision {
       ]),
       short: new Set(["q"]),
     },
+    /**
+     * Commit history. Messages, names and counts are metadata, not file contents — but the same verb
+     * prints the patch under `-p`, `-u`, `-G` and `-S`, so those simply stay off the list and the
+     * fail-closed default refuses them.
+     */
+    log: {
+      flags: new Set([
+        "--",
+        "--abbrev-commit",
+        "--all",
+        "--author",
+        "--color",
+        "--committer",
+        "--date",
+        "--decorate",
+        "--first-parent",
+        "--follow",
+        "--format",
+        "--graph",
+        "--grep",
+        "--max-count",
+        "--merges",
+        "--name-only",
+        "--name-status",
+        "--no-color",
+        "--no-decorate",
+        "--no-merges",
+        "--numstat",
+        "--oneline",
+        "--pretty",
+        "--reverse",
+        "--shortstat",
+        "--since",
+        "--stat",
+        "--until",
+        "-n",
+      ]),
+      short: new Set([]),
+      numeric: true,
+    },
+    /** The patch *is* this verb's default output, so a name-only flag has to be asked for. */
+    diff: {
+      flags: new Set([...NAME_ONLY, "--", "--cached", "--color", "--no-color", "--staged"]),
+      short: new Set([]),
+      require: NAME_ONLY,
+    },
+    show: {
+      flags: new Set([...NAME_ONLY, "--", "--color", "--format", "--no-color", "--oneline", "--pretty"]),
+      short: new Set([]),
+      require: NAME_ONLY,
+    },
+    /** Branch names. The flags that create, rename or delete a branch are not listed. */
+    branch: {
+      flags: new Set([
+        "--",
+        "--all",
+        "--color",
+        "--contains",
+        "--format",
+        "--list",
+        "--merged",
+        "--no-color",
+        "--no-merged",
+        "--remotes",
+        "--show-current",
+        "--sort",
+        "-a",
+        "-q",
+        "-r",
+        "-v",
+      ]),
+      short: new Set(["a", "q", "r", "v"]),
+    },
     /** Tracked path names. */
     "ls-files": {
       flags: new Set([
@@ -121,6 +204,7 @@ export namespace SecurityDecision {
     if (!token.startsWith("-")) return true
     const head = token.includes("=") ? token.slice(0, token.indexOf("=")) : token
     if (verb.flags.has(head)) return true
+    if (verb.numeric && /^-\d+$/.test(token)) return true
     // Clustered short flags such as `-sb`, drawn only from the verb's own letters.
     if (/^-[a-zA-Z]{2,}$/.test(token)) return [...token.slice(1)].every((letter) => verb.short.has(letter))
     return false
@@ -137,17 +221,38 @@ export namespace SecurityDecision {
     if (name === undefined) return false
     const verb = GIT_VERBS[name]
     if (!verb) return false
-    return argv.slice(index + 1).every((token) => acceptable(token, verb))
+    const rest = argv.slice(index + 1)
+    const required = verb.require
+    if (required && !rest.some((token) => required.has(token.split("=")[0]))) return false
+    return rest.every((token) => acceptable(token, verb))
   }
 
   /** True only for a command proven inert here. An unnamed executable is never inert. */
-  function inert(exec: SecurityDecisionTypes.ExecFact) {
-    const name = exec.executable
+  function inert(unit: SecurityDecisionTypes.ExecCommandFact) {
+    const name = unit.executable
     if (!name) return false
     if (INERT.has(name)) return true
     if (name !== "git") return false
     // Without the parsed command line there is nothing to prove anything against.
-    return exec.argv !== undefined && exec.argv.length > 0 && inertGit(exec.argv)
+    return unit.argv !== undefined && unit.argv.length > 0 && inertGit(unit.argv)
+  }
+
+  /**
+   * Executables the layer has an opinion about. A command whose name is here and that still did not
+   * pass `inert` was *refused*, not left unknown — so confinement must not re-admit it by another
+   * route. Anything outside this set is genuinely unclassified, which is what containment can settle.
+   */
+  function opinionated(unit: SecurityDecisionTypes.ExecCommandFact) {
+    const name = unit.executable
+    return name !== undefined && (INERT.has(name) || name === "git")
+  }
+
+  /**
+   * The commands one action will run. A sequence the scan decomposed is judged element by element;
+   * anything else is the single command the facts describe.
+   */
+  function units(exec: SecurityDecisionTypes.ExecFact): readonly SecurityDecisionTypes.ExecCommandFact[] {
+    return exec.commands && exec.commands.length > 0 ? exec.commands : [exec]
   }
 
   /**
@@ -188,11 +293,11 @@ export namespace SecurityDecision {
    * redirected first (`npm --prefix ./app install`), and over-reporting here only turns a reviewable
    * ask into a human one, while under-reporting would hand the install to the reviewer.
    */
-  function installs(exec: SecurityDecisionTypes.ExecFact) {
-    const name = exec.executable
+  function installs(unit: SecurityDecisionTypes.ExecCommandFact) {
+    const name = unit.executable
     if (!name) return false
     if (PACKAGE_RUNNERS.has(name)) return true
-    const argv = exec.argv
+    const argv = unit.argv
     if (!argv || argv.length === 0) return false
     if (PACKAGE_BARE.has(name) && argv.length === 1) return true
     // `python -m pip install x` runs the manager as a module, so the manager is the argument.
@@ -241,6 +346,21 @@ export namespace SecurityDecision {
     return R.NO_OPINION
   }
 
+  /**
+   * True when the containment facts prove this call cannot reach past the workspace: a sandbox that
+   * was actually verified this process, a network that is closed or bounded to exact destinations,
+   * and no escalation out of either. It is deliberately not available against a human-only guard or
+   * any authority above `untrusted` — confinement is evidence about reach, not about permission.
+   */
+  function contained(input: SecurityDecisionTypes.Input, exec: SecurityDecisionTypes.ExecFact) {
+    if (input.baseline.humanOnly || input.baseline.authority !== "untrusted") return false
+    if (units(exec).some(opinionated)) return false
+    const facts = input.containment
+    if (facts.sandbox !== "operational" || facts.escalated || facts.widened) return false
+    if (facts.network === "allow") return false
+    return facts.network !== "proxy" || facts.destinations.length > 0
+  }
+
   /** `deny > ask > allow`; `pass` carries no strictness. */
   function strictness(decision: SecurityDecisionTypes.Decision) {
     return decision === "deny" ? 3 : decision === "ask" ? 2 : decision === "allow" ? 1 : 0
@@ -269,12 +389,14 @@ export namespace SecurityDecision {
     const exec = input.action.exec
     if (exec) {
       if (!exec.complete) return R.EXEC_INCOMPLETE
-      if (exec.composed) return R.EXEC_COMPOSED
+      // Pure sequencing is plumbing: the scan recovered every command, so each is judged on its own.
+      // Anything that rewrites what runs stays opaque.
+      if (exec.composed && !exec.decomposable) return R.EXEC_COMPOSED
     }
 
     // A fetch of an external package is decided before any path rule: the command has no file
     // effect the scan can see, and its target is a name rather than a path.
-    let winner: R.Entry = exec && installs(exec) ? R.DEPENDENCY_INSTALL : R.NO_OPINION
+    let winner: R.Entry = exec && units(exec).some(installs) ? R.DEPENDENCY_INSTALL : R.NO_OPINION
     for (const fact of input.action.paths) {
       const rule = target(input, fact)
       if (strictness(rule.decision) > strictness(winner.decision)) winner = rule
@@ -282,8 +404,8 @@ export namespace SecurityDecision {
     // Only once every deterministic path rule has had its say. A complete parse is not proof of
     // safety: unless the scan knows what this executable does to files, or the command is proven
     // inert, the action is unclassified rather than harmless.
-    if (winner.decision === "pass" && exec && exec.complete && !exec.composed && !exec.classified && !inert(exec))
-      return R.UNCLASSIFIED_EXEC
+    if (winner.decision === "pass" && exec && units(exec).some((unit) => unit.classified !== true && !inert(unit)))
+      return contained(input, exec) ? R.CONTAINED_EXEC : R.UNCLASSIFIED_EXEC
     return winner
   }
 }

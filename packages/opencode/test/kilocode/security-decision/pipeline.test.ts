@@ -140,6 +140,53 @@ it.instance("raises an auto-approved CI workflow edit to a pending human ask", (
   }),
 )
 
+const npmTest = {
+  sessionID,
+  permission: "bash",
+  patterns: ["npm test"],
+  always: ["npm *"],
+  metadata: {
+    command: "npm test",
+    securityFacts: { complete: true, composed: false, executable: "npm", argv: ["npm", "test"], effects: [] },
+  },
+  ruleset: [{ permission: "bash", pattern: "*", action: "allow" as const }],
+}
+
+it.instance("lets an unclassified command through when the sandbox provably confines it", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    const outcome = yield* ask({
+      ...npmTest,
+      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+    })
+    expect(outcome.manual).toBe(false)
+    expect(outcome.security?.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    expect(outcome.security?.final_enforcement).toBe("allow")
+    expect(outcome.security?.requirements).toEqual(["sandbox", "restricted_network"])
+  }),
+)
+
+it.instance("still raises a security-marked ask for the same command without proven confinement", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    const permission = yield* Permission.Service
+    const fiber = yield* ask({
+      ...npmTest,
+      containment: { sandbox: "unknown", network: "allow", destinations: [], escalated: false },
+    }).pipe(Effect.forkScoped)
+    const pending = yield* Effect.gen(function* () {
+      while (true) {
+        const list = yield* permission.list()
+        if (list.length === 1) return list
+        yield* Effect.sleep("10 millis")
+      }
+    }).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("timed out")) }))
+    expect(SecurityAsk.of(pending[0]!.metadata)?.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    yield* permission.reply({ requestID: pending[0]!.id, reply: "once", interactive: true })
+    yield* Fiber.join(fiber)
+  }),
+)
+
 it.instance("records the live containment facts the caller supplied", () =>
   Effect.gen(function* () {
     process.env["KILO_SECURITY_DECISION"] = "1"

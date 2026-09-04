@@ -193,4 +193,45 @@ describe("SecurityReviewer prompt", () => {
     expect(bounded.action.argv.length).toBeLessThanOrEqual(32)
     for (const item of bounded.action.argv) expect(item.length).toBeLessThanOrEqual(128)
   })
+
+  test("carries every command of a decomposed sequence", () => {
+    const out = SecurityReviewer.request({
+      rule_id: "SEC.V1.UNCLASSIFIED_EXEC",
+      kind: "bash",
+      operation: "exec",
+      commands: [
+        { executable: "cd", argv: ["cd", "app"] },
+        { executable: "npm", argv: ["npm", "test"] },
+      ],
+      paths: [],
+      containment: request.containment,
+    })
+
+    expect(out.action.commands).toEqual([
+      { executable: "cd", argv: ["cd", "app"] },
+      { executable: "npm", argv: ["npm", "test"] },
+    ])
+  })
+
+  test("bounds a runaway sequence", () => {
+    const commands = Array.from({ length: 100 }, (_, i) => ({
+      executable: `cmd${i}`.padEnd(500, "x"),
+      argv: Array.from({ length: 200 }, (_, j) => `arg${j}`.padEnd(500, "x")),
+    }))
+    const out = SecurityReviewer.request({
+      rule_id: "SEC.V1.UNCLASSIFIED_EXEC",
+      kind: "bash",
+      operation: "exec",
+      commands,
+      paths: [],
+      containment: request.containment,
+    })
+
+    expect(out.action.commands!.length).toBeLessThanOrEqual(16)
+    for (const item of out.action.commands!) {
+      expect(item.executable!.length).toBeLessThanOrEqual(128)
+      expect(item.argv.length).toBeLessThanOrEqual(32)
+      for (const token of item.argv) expect(token.length).toBeLessThanOrEqual(128)
+    }
+  })
 })

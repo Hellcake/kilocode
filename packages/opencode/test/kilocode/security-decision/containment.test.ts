@@ -54,14 +54,20 @@ describe("ContainmentMacos", () => {
 
 describe("ContainmentMacos.facts", () => {
   test("reports the sandbox as off without probing when it is disabled", async () => {
-    const out = await ContainmentMacos.facts({ enabled: false, mode: "deny", destinations: [], escalated: false })
-    expect(out).toEqual({ sandbox: "off", network: "deny", destinations: [], escalated: false })
+    const out = await ContainmentMacos.facts({
+      enabled: false,
+      mode: "deny",
+      destinations: [],
+      escalated: false,
+      widened: false,
+    })
+    expect(out).toEqual({ sandbox: "off", network: "deny", destinations: [], escalated: false, widened: false })
     expect(ContainmentMacos.peek()).toBe("unknown")
   })
 
-  test("carries the exact destinations and the escalation flag through", async () => {
+  test("carries the destinations, the escalation flag and the widened profile through", async () => {
     const out = await ContainmentMacos.facts(
-      { enabled: true, mode: "proxy", destinations: ["models.dev:443"], escalated: true },
+      { enabled: true, mode: "proxy", destinations: ["models.dev:443"], escalated: true, widened: true },
       async () => "operational" as const,
     )
     expect(out).toEqual({
@@ -69,6 +75,7 @@ describe("ContainmentMacos.facts", () => {
       network: "proxy",
       destinations: ["models.dev:443"],
       escalated: true,
+      widened: true,
     })
   })
 })

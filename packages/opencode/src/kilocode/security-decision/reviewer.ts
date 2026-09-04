@@ -25,6 +25,7 @@ export namespace SecurityReviewer {
   const MAX_ARGV = 32
   const MAX_ARG_LENGTH = 128
   const MAX_PATHS = 16
+  const MAX_COMMANDS = 16
   const MAX_TASK = 200
   const DEFAULT_TIMEOUT = 4_000
 
@@ -36,6 +37,9 @@ export namespace SecurityReviewer {
     path?: string
   }>
 
+  /** One command of a sequence, as the reviewer sees it. */
+  export type CommandView = Readonly<{ executable?: string; argv: readonly string[] }>
+
   export type Request = Readonly<{
     rule_id: string
     action: Readonly<{
@@ -43,6 +47,8 @@ export namespace SecurityReviewer {
       operation: string
       executable?: string
       argv: readonly string[]
+      /** Every command a decomposed sequence will run, in order. Absent for a single command. */
+      commands?: readonly CommandView[]
       paths: readonly PathView[]
     }>
     workspace: Readonly<{ cwd: string }>
@@ -81,6 +87,7 @@ export namespace SecurityReviewer {
     operation: string
     executable?: string
     argv?: readonly string[]
+    commands?: readonly T.ExecCommandFact[]
     paths: readonly T.PathFact[]
     containment: T.Containment
     task?: string
@@ -92,6 +99,14 @@ export namespace SecurityReviewer {
         operation: input.operation,
         ...(input.executable ? { executable: clamp(input.executable, MAX_ARG_LENGTH) } : {}),
         argv: (input.argv ?? []).slice(0, MAX_ARGV).map((item) => clamp(item, MAX_ARG_LENGTH)),
+        ...(input.commands && input.commands.length > 0
+          ? {
+              commands: input.commands.slice(0, MAX_COMMANDS).map((command) => ({
+                ...(command.executable ? { executable: clamp(command.executable, MAX_ARG_LENGTH) } : {}),
+                argv: (command.argv ?? []).slice(0, MAX_ARGV).map((token) => clamp(token, MAX_ARG_LENGTH)),
+              })),
+            }
+          : {}),
         paths: input.paths.slice(0, MAX_PATHS).map((fact) => ({
           class: fact.class,
           inWorkspace: fact.inWorkspace,

@@ -36,6 +36,14 @@ export namespace SecurityDecisionTypes {
     operation?: string
   }>
 
+  /** One command of a sequence. A sequence of these is what a decomposable composed action is. */
+  export type ExecCommandFact = Readonly<{
+    executable?: string
+    argv?: readonly string[]
+    /** Whether the executable's own file semantics are known to the scan. */
+    classified?: boolean
+  }>
+
   export type ExecFact = Readonly<{
     /** Whether the shell scan recovered the full AST (fail-closed to false). */
     complete: boolean
@@ -46,6 +54,13 @@ export namespace SecurityDecisionTypes {
     argv?: readonly string[]
     /** Whether the executable's own file semantics are known to the scan. */
     classified?: boolean
+    /**
+     * Whether the composition is pure sequencing over fully recovered commands. A composed action
+     * is judged command by command only when this holds; otherwise it stays opaque.
+     */
+    decomposable?: boolean
+    /** The recovered commands, in source order. Present only when the scan could name them all. */
+    commands?: readonly ExecCommandFact[]
     class: "known" | "unknown"
   }>
 
@@ -62,6 +77,12 @@ export namespace SecurityDecisionTypes {
     network: "allow" | "deny" | "proxy"
     destinations: readonly string[]
     escalated: boolean
+    /**
+     * Whether the execution profile grants write access beyond its own built-in roots. A configured
+     * extra writable path is exactly the case where a proven sandbox still does not bound the call,
+     * so it is reported as a fact rather than a path.
+     */
+    widened?: boolean
   }>
 
   export type Requirement = "sandbox" | "restricted_network"

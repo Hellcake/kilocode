@@ -15,14 +15,22 @@ import type { Node } from "web-tree-sitter"
  * unknown target and holds at ask. Everything here is pure AST work — resolving a target text to an
  * absolute path stays in the scanner, which owns the cwd, the shell and the environment.
  */
-const COMPOSITION = [
-  "pipeline",
-  "list",
-  "command_substitution",
-  "process_substitution",
-  "subshell",
-  "heredoc_redirect",
-] as const
+/** Sequencing: it decides the order in which fully parsed commands run, nothing more. */
+const SEQUENCE = ["pipeline", "list"] as const
+
+/**
+ * Composition that changes *what* runs. A substitution builds the command line from the output of
+ * another command, a subshell hides its contents from the effect walk and a heredoc feeds a body
+ * the grammar does not model as a command. None of these can be judged element by element.
+ */
+const REWRITING = ["command_substitution", "process_substitution", "subshell", "heredoc_redirect"] as const
+
+/** One command of a sequence, as the security layer sees it. */
+export type ShellCommandFacts = {
+  executable?: string
+  argv?: string[]
+  classified?: boolean
+}
 
 export type ShellSecurityFacts = {
   complete: boolean
@@ -36,6 +44,13 @@ export type ShellSecurityFacts = {
    * command: `npm test > out.log` has an effect but the program itself is still arbitrary.
    */
   classified?: boolean
+  /**
+   * True when every command the run will execute was recovered and the composition is pure
+   * sequencing, so each element can be judged on its own instead of the whole line staying opaque.
+   */
+  decomposable?: boolean
+  /** The recovered commands, in source order. Present only when `decomposable`. */
+  commands?: ShellCommandFacts[]
 }
 
 /** Argument node types that carry a token of the command line. Redirects are effects, not argv. */
@@ -69,20 +84,33 @@ function argv(node: Node): string[] {
   return out
 }
 
-export function securityFacts(root: Node, unrecovered: number, commands: readonly Node[]): ShellSecurityFacts {
-  const complete = !root.hasError && unrecovered === 0
-  const composed =
-    commands.length > 1 || COMPOSITION.some((type) => root.descendantsOfType(type).some((node) => Boolean(node)))
-  if (!complete || composed || commands.length !== 1) return { complete, composed }
-  const node = commands[0]!
+function present(root: Node, types: readonly string[]) {
+  return types.some((type) => root.descendantsOfType(type).some((node) => Boolean(node)))
+}
+
+function unit(node: Node): ShellCommandFacts {
   const name = node.descendantsOfType("command_name")[0]?.text.trim()
   return {
-    complete,
-    composed,
     ...(name ? { executable: name } : {}),
     argv: argv(node),
     classified: name !== undefined && commandOperation(name) !== undefined,
   }
+}
+
+export function securityFacts(root: Node, unrecovered: number, commands: readonly Node[]): ShellSecurityFacts {
+  const complete = !root.hasError && unrecovered === 0
+  const rewriting = present(root, REWRITING)
+  const composed = commands.length > 1 || rewriting || present(root, SEQUENCE)
+  const decomposable = complete && !rewriting
+  const units = decomposable ? commands.map(unit) : []
+  const facts = {
+    complete,
+    composed,
+    decomposable,
+    ...(units.length > 0 ? { commands: units } : {}),
+  }
+  if (!complete || composed || commands.length !== 1) return facts
+  return { ...facts, ...units[0] }
 }
 
 /** The file operations the layer can name. They mirror the operations structured file tools report. */
@@ -106,6 +134,13 @@ const OPERATIONS: Record<string, ShellOperation> = {
   cat: "read",
   "get-content": "read",
   type: "read",
+  head: "read",
+  tail: "read",
+  wc: "read",
+  nl: "read",
+  stat: "read",
+  file: "read",
+  diff: "read",
   rm: "delete",
   "remove-item": "delete",
   del: "delete",

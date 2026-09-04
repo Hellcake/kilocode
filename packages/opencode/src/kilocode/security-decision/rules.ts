@@ -67,6 +67,15 @@ export namespace SecurityDecisionRules {
   /** A write to a dependency manifest or lockfile: the same new-dependency boundary, declared. */
   export const DEPENDENCY_MANIFEST_WRITE = entry("SEC.V1.DEPENDENCY_MANIFEST_WRITE", "ask")
 
+  /**
+   * An unclassified command the sandbox provably confines. This is the one rule that grants: a
+   * complete parse plus proven confinement, a closed or exactly bounded network and no escalation
+   * is the only evidence the layer has that a command it cannot name still cannot reach past the
+   * workspace. Every deterministic path rule, the dependency boundary, the XDG floor and any
+   * human-only guard outrank it.
+   */
+  export const CONTAINED_EXEC = entry("SEC.V1.CONTAINED_EXEC", "allow", false, ["sandbox", "restricted_network"])
+
   /** Soft ambiguity a human routinely resolves: reviewable once a reviewer exists. */
   export const DESTRUCTIVE_FS = entry("SEC.V1.DESTRUCTIVE_FS", "ask", true)
 
