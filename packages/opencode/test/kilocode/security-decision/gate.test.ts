@@ -136,19 +136,22 @@ describe("KiloSecurityGate", () => {
 })
 
 // kilocode_change start - the reviewer stage lives in the gate, after the deterministic decision
+// kilocode_change - the reviewer only ever sees a soft ambiguity now: an unknown command is not
+// something it can judge, so `UNCLASSIFIED_EXEC` stopped being reviewable.
 const unclassified = {
   permission: "bash",
-  patterns: ["sed -i s/a/b/ src/a.ts"],
+  patterns: ["rm docs/old.md"],
   metadata: {
     securityFacts: {
       complete: true,
       composed: false,
-      executable: "sed",
-      argv: ["sed", "-i", "s/a/b/", "src/a.ts"],
-      effects: [],
+      executable: "rm",
+      argv: ["rm", "docs/old.md"],
+      classified: true,
+      effects: [{ operation: "delete", path: "docs/old.md" }],
     },
   },
-  resolved: [{ pattern: "sed -i s/a/b/ src/a.ts", action: "allow" as const }],
+  resolved: [{ pattern: "rm docs/old.md", action: "allow" as const }],
 }
 
 describe("KiloSecurityGate reviewer stage", () => {
@@ -167,12 +170,12 @@ describe("KiloSecurityGate reviewer stage", () => {
     expect(out?.audit.reviewer).toEqual({ state: "not_run" })
   })
 
-  test("routes a fully parsed unclassified command to a reviewable ask", async () => {
+  test("routes a soft-ambiguity ask to the reviewer", async () => {
     on()
     const out = await run(unclassified)
 
     expect(out?.decision).toBe("ask")
-    expect(out?.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(out?.rule_id).toBe("SEC.V1.DESTRUCTIVE_FS")
     expect(out?.reviewable).toBe(true)
   })
 
@@ -184,7 +187,7 @@ describe("KiloSecurityGate reviewer stage", () => {
 
     expect(out?.decision).toBe("allow")
     expect(out?.audit.reviewer).toMatchObject({ state: "allow", reason_code: "IN_WORKSPACE_EDIT" })
-    expect(out?.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(out?.rule_id).toBe("SEC.V1.DESTRUCTIVE_FS")
   })
 
   test("a keep_ask verdict leaves the ask standing", async () => {

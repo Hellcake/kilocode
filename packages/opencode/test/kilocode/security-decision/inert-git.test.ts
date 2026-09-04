@@ -40,7 +40,8 @@ const asks = (command: string) => {
     rule: "SEC.V1.UNCLASSIFIED_EXEC",
     decision: "ask",
   })
-  expect(out.reviewable).toBe(true)
+  // kilocode_change - an unknown command is never handed to a reviewer: there is nothing to judge.
+  expect(out.reviewable).toBe(false)
 }
 
 /** The argument itself is the sensitive thing, so the path rule names the ask rather than the exec one. */
@@ -117,9 +118,6 @@ describe("unknown or content-bearing arguments fail closed", () => {
     ["git ls-files --textconv"],
     ["git"],
     ["git st"],
-    ["git config core.hooksPath .githooks"],
-    ["git push --force"],
-    ["git commit -m x"],
   ])("%s asks", (command) => asks(command))
 })
 
@@ -146,8 +144,8 @@ describe("the provable dev flow still passes", () => {
 /**
  * History and branch names are metadata, not file contents: `git log` prints commit messages and
  * `--stat`-family output prints names and counts. The content-bearing flags of the same verbs
- * (`-p`, `-G`, `-S`) stay outside the allowlist, and `diff`/`show` — whose default output *is* the
- * patch — are inert only when a name-only flag is present.
+ * (`-p`, `-G`, `-S`) stay outside the allowlist. `diff` requires a name-only flag; `show` is never
+ * inert because its object syntax can still address a sensitive blob alongside metadata flags.
  */
 describe("history and name-only reporting passes", () => {
   test.each([
@@ -163,9 +161,6 @@ describe("history and name-only reporting passes", () => {
     ["git diff --stat"],
     ["git diff --name-only"],
     ["git diff --name-status HEAD"],
-    ["git show --stat HEAD"],
-    ["git show --name-only HEAD"],
-    ["git show --stat"],
     ["git branch"],
     ["git branch -a"],
     ["git branch --list"],
@@ -175,10 +170,11 @@ describe("history and name-only reporting passes", () => {
   test.each([
     ["git show HEAD"],
     ["git show"],
-    ["git branch -d topic"],
-    ["git branch -D topic"],
-    ["git branch -m old new"],
-    ["git branch --edit-description"],
+    ["git show --stat HEAD"],
+    ["git show --name-only HEAD"],
+    ["git show --stat"],
+    ["git show --stat HEAD:.env"],
+    ["git show --name-only HEAD:.env"],
     ["git log --ext-diff"],
     ["git log --output=/tmp/x"],
   ])("%s asks", (command) => asks(command))
@@ -215,8 +211,6 @@ describe("containment does not re-admit a refused git invocation", () => {
     ["git show HEAD:.env"],
     ["git log -p"],
     ["git diff"],
-    ["git config core.hooksPath ./hooks"],
-    ["git push --force"],
     ["git --git-dir=/elsewhere/.git status"],
   ])("%s still asks inside a proven sandbox", (command) => {
     const out = inConfinement(command)
@@ -226,6 +220,16 @@ describe("containment does not re-admit a refused git invocation", () => {
       decision: "ask",
     })
   })
+
+  test.each([["git config core.hooksPath ./hooks"], ["git push --force"]])(
+    "%s stays a deterministic boundary inside a proven sandbox",
+    (command) => {
+      const out = inConfinement(command)
+      expect(out.decision).toBe("ask")
+      expect(out.reviewable).toBe(false)
+      expect(out.rule_id).not.toBe("SEC.V1.CONTAINED_EXEC")
+    },
+  )
 
   test("a git invocation the allowlist accepts still passes", () => {
     expect(inConfinement("git status").rule_id).toBe("SEC.V1.NO_OPINION")
@@ -261,4 +265,76 @@ describe("non-git inert commands", () => {
   )
 
   test.each([["node -e process.exit(0)"], ["sh -c ls"], ["env"], ["printenv"]])("%s asks", (command) => asks(command))
+})
+
+/**
+ * Git splits three ways, and only the first is autonomous.
+ *
+ * Names and metadata (`status`, `log`, `ls-files`, `--stat` forms) are already inert. Everything
+ * that changes the repository is a deterministic boundary rather than a judgement call, and the
+ * verbs that reach a remote hand the work to another machine, which is the same delegation the host
+ * control rule names. Content-printing verbs stay where they were: an ask, and never a reviewer's
+ * to narrow, because the content they print is exactly what a direct read would ask about.
+ */
+describe("git that reaches a remote is delegated execution", () => {
+  test.each([
+    ["git push origin main"],
+    ["git push --force"],
+    ["git fetch origin"],
+    ["git pull"],
+    ["git clone https://example.com/x.git"],
+    ["git remote add evil https://example.com/x.git"],
+    ["git submodule update --init"],
+  ])("%s is host control", (command) => {
+    const out = shell(command)
+    expect({ command, rule: out.rule_id, decision: out.decision, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.HOST_CONTROL",
+      decision: "ask",
+      reviewable: false,
+    })
+  })
+})
+
+describe("git that changes the repository is a deterministic boundary", () => {
+  test.each([
+    ["git add -A"],
+    ["git commit -m x"],
+    ["git stash"],
+    ["git checkout -b feature"],
+    ["git switch main"],
+    ["git restore src/a.ts"],
+    ["git reset --hard"],
+    ["git clean -fd"],
+    ["git rebase main"],
+    ["git merge topic"],
+    ["git cherry-pick abc"],
+    ["git revert abc"],
+    ["git tag v1"],
+    ["git branch -d topic"],
+    ["git branch -D topic"],
+    ["git branch -m old new"],
+    ["git branch --edit-description"],
+    ["git apply patch.diff"],
+    ["git config core.hooksPath .githooks"],
+  ])("%s is a repository mutation", (command) => {
+    const out = shell(command)
+    expect({ command, rule: out.rule_id, decision: out.decision, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.REPO_MUTATION",
+      decision: "ask",
+      reviewable: false,
+    })
+  })
+})
+
+describe("content-printing git is never a reviewer's to narrow", () => {
+  test.each([["git diff"], ["git show HEAD"], ["git blame src/a.ts"], ["git log -p"], ["git show HEAD:.env"]])(
+    "%s asks without a reviewer",
+    (command) => {
+      const out = shell(command)
+      expect(out.decision).toBe("ask")
+      expect(out.reviewable).toBe(false)
+    },
+  )
 })

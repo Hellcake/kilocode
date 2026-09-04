@@ -150,11 +150,6 @@ export namespace SecurityDecision {
       short: new Set([]),
       require: NAME_ONLY,
     },
-    show: {
-      flags: new Set([...NAME_ONLY, "--", "--color", "--format", "--no-color", "--oneline", "--pretty"]),
-      short: new Set([]),
-      require: NAME_ONLY,
-    },
     /** Branch names. The flags that create, rename or delete a branch are not listed. */
     branch: {
       flags: new Set([
@@ -231,6 +226,7 @@ export namespace SecurityDecision {
   function inert(unit: SecurityDecisionTypes.ExecCommandFact) {
     const name = unit.executable
     if (!name) return false
+    if (unit.ambient) return false
     if (INERT.has(name)) return true
     if (name !== "git") return false
     // Without the parsed command line there is nothing to prove anything against.
@@ -274,10 +270,191 @@ export namespace SecurityDecision {
     pdm: new Set(["add", "install", "update"]),
     conda: new Set(["install", "create"]),
     cargo: new Set(["add", "install", "fetch"]),
+    // System package managers reach outside the machine for code exactly like the language ones do.
+    brew: new Set(["install", "reinstall", "upgrade", "tap"]),
+    apt: new Set(["install", "upgrade", "full-upgrade", "build-dep"]),
+    "apt-get": new Set(["install", "upgrade", "dist-upgrade", "build-dep"]),
+    yum: new Set(["install", "upgrade", "update", "localinstall", "reinstall"]),
+    dnf: new Set(["install", "upgrade", "update", "localinstall", "reinstall"]),
+    zypper: new Set(["install", "in", "up", "update"]),
+    apk: new Set(["add", "upgrade"]),
+    pacman: new Set(["-S", "-U", "-Sy", "-Su", "-Syu"]),
+    port: new Set(["install", "upgrade"]),
+    snap: new Set(["install", "refresh"]),
+    choco: new Set(["install", "upgrade"]),
+    scoop: new Set(["install", "update"]),
+    "nix-env": new Set(["-i", "-iA", "--install"]),
+    pipenv: new Set(["install", "update", "sync"]),
+    mamba: new Set(["install", "create"]),
+    micromamba: new Set(["install", "create"]),
     go: new Set(["get", "install"]),
     gem: new Set(["install", "fetch"]),
     bundle: new Set(["add", "install", "update"]),
     composer: new Set(["require", "install", "update"]),
+  }
+
+  /**
+   * Commands that steer the machine rather than the project: process control, service and login
+   * item registration, disk, power and network settings, and privilege elevation.
+   */
+  const HOST = new Set([
+    "at",
+    "csrutil",
+    "defaults",
+    "diskutil",
+    "doas",
+    "dscl",
+    "dseditgroup",
+    "fdesetup",
+    "firewall-cmd",
+    "groupadd",
+    "halt",
+    "ifconfig",
+    "iptables",
+    "kextload",
+    "kextunload",
+    "kill",
+    "killall",
+    "launchctl",
+    "mount",
+    "networksetup",
+    "nvram",
+    "passwd",
+    "pkill",
+    "pmset",
+    "poweroff",
+    "reboot",
+    "renice",
+    "route",
+    "scutil",
+    "service",
+    "shutdown",
+    "softwareupdate",
+    "spctl",
+    "su",
+    "sudo",
+    "sysctl",
+    "systemctl",
+    "systemsetup",
+    "tmutil",
+    "ufw",
+    "umount",
+    "useradd",
+    "usermod",
+    "visudo",
+    "crontab",
+    // Launchers, pasteboard and detached sessions: host state and processes that outlive this call.
+    "caffeinate",
+    "chflags",
+    "open",
+    "pbcopy",
+    "pbpaste",
+    "screen",
+    "tmux",
+    "xdg-open",
+  ])
+
+  /**
+   * Commands that hand execution to a privileged daemon or another machine. The sandbox confines
+   * this process; it does not confine what the daemon or the remote host then does on its behalf.
+   */
+  const DELEGATES = new Set([
+    "colima",
+    "dbus-send",
+    "docker",
+    "docker-compose",
+    "nc",
+    "ncat",
+    "netcat",
+    "osascript",
+    "socat",
+    "telnet",
+    "gdbus",
+    "helm",
+    "incus",
+    "kubectl",
+    "limactl",
+    "lxc",
+    "machinectl",
+    "nerdctl",
+    "nsenter",
+    "podman",
+    "rsync",
+    "scp",
+    "sftp",
+    "ssh",
+    "systemd-run",
+    "vagrant",
+    "virsh",
+  ])
+
+  /** Verbs that reach another machine: the same delegation `DELEGATES` names, spelled in git. */
+  const GIT_REMOTE = new Set(["clone", "fetch", "pull", "push", "remote", "submodule"])
+
+  /** Verbs that change the repository, its refs, its working tree or its configuration. */
+  const GIT_MUTATION = new Set([
+    "add",
+    "am",
+    "apply",
+    "branch",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "config",
+    "filter-branch",
+    "gc",
+    "init",
+    "merge",
+    "mv",
+    "prune",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "switch",
+    "tag",
+    "update-index",
+    "update-ref",
+    "worktree",
+  ])
+
+  /** The verb of a git invocation, or undefined when a global flag already disqualified the run. */
+  function gitVerb(argv: readonly string[]) {
+    let index = 1
+    while (index < argv.length && argv[index]!.startsWith("-")) {
+      if (!GIT_GLOBALS.has(argv[index]!)) return undefined
+      index++
+    }
+    return argv[index]
+  }
+
+  /**
+   * What a git invocation does, for the invocations the allowlist already refused. An inert one is
+   * classified as nothing: `git branch -a` lists names, `git branch -d` deletes one, and only the
+   * argument allowlist tells them apart.
+   */
+  function gitAction(unit: SecurityDecisionTypes.ExecCommandFact) {
+    if (unit.executable !== "git" || inert(unit)) return undefined
+    const argv = unit.argv
+    if (!argv || argv.length === 0) return undefined
+    const verb = gitVerb(argv)
+    if (verb === undefined) return undefined
+    if (GIT_REMOTE.has(verb)) return "remote" as const
+    if (GIT_MUTATION.has(verb)) return "mutation" as const
+    return undefined
+  }
+
+  function steers(unit: SecurityDecisionTypes.ExecCommandFact) {
+    const name = unit.executable
+    if (name !== undefined && (HOST.has(name) || DELEGATES.has(name))) return true
+    return gitAction(unit) === "remote"
+  }
+
+  function mutatesRepo(unit: SecurityDecisionTypes.ExecCommandFact) {
+    return gitAction(unit) === "mutation"
   }
 
   /** Executables that are themselves a fetch-and-run: the verb is the package name. */
@@ -316,7 +493,9 @@ export namespace SecurityDecision {
     // Exact, fully parsed destruction of a root/device target — the narrow soft-path deny.
     if (fact.class === "root") {
       if (op === "delete" && exec?.complete && !exec.composed) return R.DESTRUCTIVE_ROOT
-      return R.DESTRUCTIVE_FS
+      // Anything else aimed at the root or a device is a boundary crossing, not a soft ambiguity a
+      // reviewer could resolve: writing a raw device is never ordinary development work.
+      return R.SENSITIVE_BOUNDARY
     }
 
     if (fact.class === "git_hook") {
@@ -361,6 +540,68 @@ export namespace SecurityDecision {
     return facts.network !== "proxy" || facts.destinations.length > 0
   }
 
+  /**
+   * Programs whose whole purpose is running another command. The program they execute lives in
+   * their arguments, so the scan's view of the command line and the action performed are different
+   * things, and confinement says nothing about the difference.
+   */
+  const SHELLS = new Set(["ash", "bash", "busybox", "csh", "dash", "fish", "ksh", "sh", "tcsh", "zsh"])
+
+  /** Wrappers that take a command as their arguments and hand execution to it. */
+  const WRAPPERS = new Set([
+    "chroot",
+    "command",
+    "doas",
+    "eval",
+    "exec",
+    "nice",
+    "nohup",
+    "script",
+    "setsid",
+    "stdbuf",
+    "su",
+    "sudo",
+    "time",
+    "timeout",
+    "watch",
+    "xargs",
+  ])
+
+  /** Interpreters whose program is always the first argument, with no flag to mark it. */
+  const SCRIPT_FIRST = new Set(["awk", "gawk", "mawk", "osascript"])
+
+  /** Flags that hand a program to the executable as text. */
+  const CODE_FLAGS = new Set(["--eval", "--exec", "-E", "-c", "-e"])
+
+  /**
+   * Characters that let an argument carry a nested command rather than name a value. The carrier
+   * lists above cannot be complete — the next interpreter is always one release away — so this
+   * structural check stands *alongside* them rather than after them.
+   */
+  const NESTED = /[\s;|&`$(){}<>\\'"]/
+
+  /** True when the unit runs a program the scan cannot see. */
+  function carries(unit: SecurityDecisionTypes.ExecCommandFact) {
+    const name = unit.executable
+    if (!name) return true
+    if (SHELLS.has(name) || WRAPPERS.has(name) || SCRIPT_FIRST.has(name)) return true
+    const argv = unit.argv ?? []
+    if (argv.some((token) => CODE_FLAGS.has(token))) return true
+    return argv.slice(1).some((token) => NESTED.test(token))
+  }
+
+  /**
+   * Whether a contained ask may be offered to a reviewer.
+   *
+   * Confinement is evidence about reach: the sandbox bounds writes and network, while the command's
+   * own output still leaves it for the model context. That makes containment necessary but not
+   * sufficient — the invocation must also be structurally simple, so the question put to a reviewer
+   * is "does this bounded, legible command fit the task" rather than "what does this program do".
+   */
+  function eligible(exec: SecurityDecisionTypes.ExecFact) {
+    return !units(exec).some(carries)
+  }
+
   /** `deny > ask > allow`; `pass` carries no strictness. */
   function strictness(decision: SecurityDecisionTypes.Decision) {
     return decision === "deny" ? 3 : decision === "ask" ? 2 : decision === "allow" ? 1 : 0
@@ -376,6 +617,9 @@ export namespace SecurityDecision {
     const result = R.result(rule)
     // An existing human-only guard is never narrowed by a reviewer: a human has to answer it.
     if (input.baseline.humanOnly && result.decision === "ask") return { ...result, reviewable: false }
+    // The contained population is not reviewable as a class; each invocation earns it separately.
+    if (rule.id === R.CONTAINED_EXEC.id)
+      return { ...result, reviewable: input.action.exec !== undefined && eligible(input.action.exec) }
     return result
   }
 
@@ -396,11 +640,21 @@ export namespace SecurityDecision {
 
     // A fetch of an external package is decided before any path rule: the command has no file
     // effect the scan can see, and its target is a name rather than a path.
-    let winner: R.Entry = exec && units(exec).some(installs) ? R.DEPENDENCY_INSTALL : R.NO_OPINION
+    const ambient = exec && units(exec).some((unit) => unit.ambient)
+    let winner: R.Entry = exec && units(exec).some(installs)
+      ? R.DEPENDENCY_INSTALL
+      : exec && units(exec).some(steers)
+        ? R.HOST_CONTROL
+        : exec && units(exec).some(mutatesRepo)
+          ? R.REPO_MUTATION
+          : R.NO_OPINION
     for (const fact of input.action.paths) {
       const rule = target(input, fact)
       if (strictness(rule.decision) > strictness(winner.decision)) winner = rule
     }
+    // A reviewable path ask must not make inherited credentials reviewable as a side effect.
+    if (ambient && winner.decision !== "deny" && (winner.decision === "pass" || winner.reviewable))
+      return R.AMBIENT_ENVIRONMENT
     // Only once every deterministic path rule has had its say. A complete parse is not proof of
     // safety: unless the scan knows what this executable does to files, or the command is proven
     // inert, the action is unclassified rather than harmless.

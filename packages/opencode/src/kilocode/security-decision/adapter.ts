@@ -195,42 +195,72 @@ export namespace SecurityDecisionAdapter {
   /** Bound on how many commands of one sequence the layer will reason about. */
   const MAX_COMMANDS = 32
 
-  function unit(item: unknown): T.ExecCommandFact {
-    if (!item || typeof item !== "object") return {}
-    const value = item as { executable?: unknown; argv?: unknown; classified?: unknown }
+  type Normalized<A> = Readonly<{ value: A; truncated: boolean }>
+
+  function unit(item: unknown): Normalized<T.ExecCommandFact> {
+    if (!item || typeof item !== "object") return { value: {}, truncated: true }
+    const value = item as { executable?: unknown; argv?: unknown; classified?: unknown; ambient?: unknown }
+    const argv = Array.isArray(value.argv)
+      ? value.argv.filter((token): token is string => typeof token === "string")
+      : []
     return {
-      ...(typeof value.executable === "string" ? { executable: value.executable } : {}),
-      argv: Array.isArray(value.argv) ? value.argv.filter((token): token is string => typeof token === "string") : [],
-      classified: value.classified === true,
+      value: {
+        ...(typeof value.executable === "string" ? { executable: value.executable } : {}),
+        argv,
+        classified: value.classified === true,
+        ambient: value.ambient === true,
+      },
+      truncated:
+        (value.executable !== undefined && typeof value.executable !== "string") ||
+        (value.classified !== undefined && typeof value.classified !== "boolean") ||
+        (value.ambient !== undefined && typeof value.ambient !== "boolean") ||
+        (value.argv !== undefined && !Array.isArray(value.argv)) ||
+        (Array.isArray(value.argv) && argv.length !== value.argv.length),
     }
   }
 
-  function exec(request: Request): T.ExecFact | undefined {
-    if (!EXECS.has(request.permission)) return undefined
+  function exec(request: Request): Normalized<T.ExecFact | undefined> {
+    if (!EXECS.has(request.permission)) return { value: undefined, truncated: false }
     const facts = request.metadata?.["securityFacts"]
     // No facts at all is a plumbing gap, not an unparsed command: report it as missing metadata.
-    if (!facts || typeof facts !== "object") return undefined
+    if (!facts || typeof facts !== "object") return { value: undefined, truncated: false }
     const value = facts as {
       complete?: unknown
+      truncated?: unknown
       composed?: unknown
       executable?: unknown
       argv?: unknown
       classified?: unknown
+      ambient?: unknown
       decomposable?: unknown
       commands?: unknown
     }
     const argv = Array.isArray(value.argv) ? value.argv.filter((item): item is string => typeof item === "string") : []
-    const commands = Array.isArray(value.commands) ? value.commands.slice(0, MAX_COMMANDS).map(unit) : undefined
+    const list = Array.isArray(value.commands) ? value.commands : undefined
+    const commands = list?.slice(0, MAX_COMMANDS).map(unit)
     return {
-      complete: value.complete === true,
-      composed: value.composed === true,
-      classified: value.classified === true,
-      decomposable: value.decomposable === true,
-      ...(commands ? { commands } : {}),
-      argv,
-      ...(typeof value.executable === "string"
-        ? { executable: value.executable, class: "known" as const }
-        : { class: "unknown" as const }),
+      value: {
+        complete: value.complete === true,
+        composed: value.composed === true,
+        classified: value.classified === true,
+        ambient: value.ambient === true,
+        decomposable: value.decomposable === true,
+        ...(commands ? { commands: commands.map((item) => item.value) } : {}),
+        argv,
+        ...(typeof value.executable === "string"
+          ? { executable: value.executable, class: "known" as const }
+          : { class: "unknown" as const }),
+      },
+      truncated:
+        value.truncated === true ||
+        (value.executable !== undefined && typeof value.executable !== "string") ||
+        (value.classified !== undefined && typeof value.classified !== "boolean") ||
+        (value.ambient !== undefined && typeof value.ambient !== "boolean") ||
+        (value.argv !== undefined && !Array.isArray(value.argv)) ||
+        (Array.isArray(value.argv) && argv.length !== value.argv.length) ||
+        (value.commands !== undefined && !Array.isArray(value.commands)) ||
+        (list !== undefined && list.length > MAX_COMMANDS) ||
+        commands?.some((item) => item.truncated) === true,
     }
   }
 
@@ -239,10 +269,65 @@ export namespace SecurityDecisionAdapter {
    * resolution could not determine the target, which classifies as unknown and holds at ask; a
    * missing array means no resolution was attempted and the pattern itself stands.
    */
-  function resolved(request: Request): Array<string> | undefined {
+  function resolved(request: Request): Normalized<Array<string> | undefined> {
     const value = request.metadata?.["securityPaths"]
-    if (!Array.isArray(value)) return undefined
-    return value.map((item) => (typeof item === "string" ? item : item === null ? "" : undefined)) as string[]
+    if (value === undefined) return { value: undefined, truncated: false }
+    if (!Array.isArray(value)) return { value: undefined, truncated: true }
+    return {
+      value: value.map((item) => (typeof item === "string" ? item : "")),
+      truncated:
+        value.length !== request.patterns.length || value.some((item) => typeof item !== "string" && item !== null),
+    }
+  }
+
+  /** Permissions whose own patterns are concrete local paths rather than selectors or identifiers. */
+  const PATTERNS = new Set(["edit", "read", "write"])
+
+  /** Permissions that carry their concrete filesystem scope in metadata, not in `patterns`. */
+  const FIELDS: Record<string, string> = {
+    glob: "path",
+    grep: "path",
+    lsp: "filePath",
+    notebook_edit: "path",
+    notebook_execute: "path",
+    notebook_read: "path",
+    recall: "directory",
+    repo_clone: "path",
+    repo_overview: "path",
+    semantic_search: "path",
+  }
+
+  type Targets = Readonly<{ value: readonly string[]; patterns: boolean; truncated: boolean }>
+
+  function targets(request: Request): Targets {
+    // `read` is also the permission used for MCP resources; those strings are URI-like capability
+    // identifiers and must not be interpreted as local filesystem names.
+    const resource =
+      request.permission === "read" &&
+      request.patterns.length > 0 &&
+      request.patterns.every((pattern) => /^mcp:[^:]+:/.test(pattern))
+    if (PATTERNS.has(request.permission) && !resource)
+      return { value: request.patterns, patterns: true, truncated: false }
+
+    if (request.permission === "external_directory") {
+      const filepath = request.metadata?.["filepath"]
+      if (typeof filepath === "string") return { value: [filepath], patterns: false, truncated: false }
+      if (filepath !== undefined) return { value: [], patterns: false, truncated: true }
+      const directories = request.metadata?.["directories"]
+      if (Array.isArray(directories)) {
+        const value = directories.filter((item): item is string => typeof item === "string")
+        return { value, patterns: false, truncated: value.length !== directories.length }
+      }
+      if (directories !== undefined) return { value: [], patterns: false, truncated: true }
+      return { value: request.patterns, patterns: true, truncated: false }
+    }
+
+    const key = FIELDS[request.permission]
+    if (!key) return { value: [], patterns: false, truncated: false }
+    const value = request.metadata?.[key]
+    if (value === undefined || value === null || value === "") return { value: [], patterns: false, truncated: false }
+    if (typeof value !== "string") return { value: [], patterns: false, truncated: true }
+    return { value: [value], patterns: false, truncated: false }
   }
 
   /**
@@ -250,23 +335,32 @@ export namespace SecurityDecisionAdapter {
    * same rules as `edit`/`write`/`read`. An effect without a path is a target the scan could not
    * determine: it becomes an `unknown` fact, which the core holds at ask.
    */
-  function effects(request: Request, workspace: string): T.PathFact[] {
+  function effects(request: Request, workspace: string): Normalized<T.PathFact[]> {
     const facts = request.metadata?.["securityFacts"]
-    if (!facts || typeof facts !== "object") return []
+    if (!facts || typeof facts !== "object") return { value: [], truncated: false }
     const list = (facts as { effects?: unknown }).effects
-    if (!Array.isArray(list)) return []
+    if (list === undefined) return { value: [], truncated: false }
+    if (!Array.isArray(list)) return { value: [], truncated: true }
     const out: T.PathFact[] = []
+    let truncated = false
     for (const item of list) {
-      if (!item || typeof item !== "object") continue
+      if (!item || typeof item !== "object") {
+        truncated = true
+        continue
+      }
       const value = item as { operation?: unknown; path?: unknown }
-      if (typeof value.operation !== "string" || !OPERATIONS.has(value.operation)) continue
+      if (typeof value.operation !== "string" || !OPERATIONS.has(value.operation)) {
+        truncated = true
+        continue
+      }
       if (typeof value.path !== "string" || value.path.length === 0) {
+        if (value.path !== undefined) truncated = true
         out.push({ path: "", inWorkspace: false, class: "unknown", operation: value.operation })
         continue
       }
       out.push({ ...classify(value.path, workspace), operation: value.operation })
     }
-    return out
+    return { value: out, truncated }
   }
 
   /**
@@ -289,8 +383,11 @@ export namespace SecurityDecisionAdapter {
       // The executable's own name is not one of its arguments.
       for (const token of (unit.argv ?? []).slice(1)) {
         if (token.length === 0 || token.startsWith("-") || token.includes("://")) continue
-        // `@file` is how curl and friends spell "read this file", so the reference is the tail.
-        const fact = classify(token.startsWith("@") ? token.slice(1) : token, workspace)
+        // `@file` is how curl and friends spell "read this file", and `key=value` is how `dd` and
+        // its relatives spell an operand: in both the reference is the tail, not the whole token.
+        const operand = /^[A-Za-z_][A-Za-z0-9_]*=(.+)$/.exec(token)
+        const named = token.startsWith("@") ? token.slice(1) : (operand?.[1] ?? token)
+        const fact = classify(named, workspace)
         if (fact.class === "unknown") continue
         if (fact.class === "ordinary" && fact.inWorkspace) continue
         if (seen.has(fact.path)) continue
@@ -309,20 +406,27 @@ export namespace SecurityDecisionAdapter {
 
   function toInput(request: Request, ctx: Context): T.Input {
     const kind = delegated(request) ? "mcp" : request.permission
-    const facts = exec(request)
+    const normalized = exec(request)
+    const facts = normalized.value
+    const impact = EXECS.has(request.permission) ? effects(request, ctx.workspace) : { value: [], truncated: false }
+    const target =
+      kind === "mcp" || EXECS.has(request.permission)
+        ? { value: [], patterns: false, truncated: false }
+        : targets(request)
+    const identity = target.patterns ? resolved(request) : { value: undefined, truncated: false }
     // Shell patterns are commands, not paths: its targets come from the scan's structured effects,
     // plus the notable paths its own command line names.
     const paths =
       kind === "mcp"
         ? []
         : EXECS.has(request.permission)
-          ? [...effects(request, ctx.workspace), ...argvPaths(facts, ctx.workspace)]
+          ? [...impact.value, ...argvPaths(facts, ctx.workspace)]
           : (() => {
-              // A symlink must be judged by what it points at, so the resolved target wins.
-              const real = resolved(request)
               // The diff is the only view of *what* changed, so the manifest region comes from it.
               const region = SecurityManifest.region(request.metadata?.["diff"])
-              return request.patterns.map((pattern, index) => classify(real?.[index] ?? pattern, ctx.workspace, region))
+              return target.value.map((pattern, index) =>
+                classify(identity.value?.[index] ?? pattern, ctx.workspace, region),
+              )
             })()
     const complete = !EXECS.has(request.permission) || facts !== undefined
     return {
@@ -333,12 +437,21 @@ export namespace SecurityDecisionAdapter {
         authority: ctx.floor.authority,
         humanOnly: ctx.humanOnly,
       },
-      metadata: { complete, truncated: false },
+      metadata: {
+        complete,
+        truncated: normalized.truncated || impact.truncated || target.truncated || identity.truncated,
+      },
       containment: ctx.containment,
     }
   }
 
-  function audit(request: Request, ctx: Context, result: T.Result, started: number): Audit {
+  function audit(
+    request: Request,
+    ctx: Context,
+    result: T.Result,
+    metadata: T.Input["metadata"],
+    started: number,
+  ): Audit {
     return {
       schema: "kilo.security-decision/v1",
       policy_version: R.POLICY_VERSION,
@@ -350,8 +463,8 @@ export namespace SecurityDecisionAdapter {
       authority_basis:
         ctx.floor.authority === "xdg_global" ? "xdg_scope" : ctx.floor.authority === "hard" ? "hard_product" : "none",
       authority_conflict: ctx.floor.conflict,
-      metadata_complete: result.rule_id !== R.METADATA_INCOMPLETE.id,
-      metadata_truncated: false,
+      metadata_complete: metadata.complete,
+      metadata_truncated: metadata.truncated,
       containment: ctx.containment,
       requirements: result.requirements,
       latency_ms: Date.now() - started,
@@ -364,26 +477,33 @@ export namespace SecurityDecisionAdapter {
     const started = Date.now()
     try {
       const input = toInput(request, ctx)
-      const result = SecurityDecision.decide(input)
+      const initial = SecurityDecision.decide(input)
+      const prepared =
+        initial.decision === "ask" && initial.reviewable
+          ? SecurityReviewer.request({
+              rule_id: initial.rule_id,
+              kind: input.action.kind,
+              operation: input.action.operation,
+              ...(input.action.exec?.executable ? { executable: input.action.exec.executable } : {}),
+              argv: input.action.exec?.argv,
+              ...(input.action.exec?.commands ? { commands: input.action.exec.commands } : {}),
+              paths: input.action.paths,
+              containment: ctx.containment,
+              // What the model said it was doing. Untrusted, model-authored context that makes the
+              // reviewer's question answerable; it is never evidence and never relaxes a rule.
+              ...(typeof request.metadata?.["description"] === "string"
+                ? { task: request.metadata["description"] }
+                : {}),
+            })
+          : undefined
+      const metadata = { ...input.metadata, truncated: input.metadata.truncated || prepared?.truncated === true }
+      const result = prepared?.truncated ? R.result(R.METADATA_INCOMPLETE) : initial
       return {
         decision: result.decision,
         rule_id: result.rule_id,
         reviewable: result.reviewable,
-        ...(result.decision === "ask" && result.reviewable
-          ? {
-              review: SecurityReviewer.request({
-                rule_id: result.rule_id,
-                kind: input.action.kind,
-                operation: input.action.operation,
-                ...(input.action.exec?.executable ? { executable: input.action.exec.executable } : {}),
-                argv: input.action.exec?.argv,
-                ...(input.action.exec?.commands ? { commands: input.action.exec.commands } : {}),
-                paths: input.action.paths,
-                containment: ctx.containment,
-              }),
-            }
-          : {}),
-        audit: audit(request, ctx, result, started),
+        ...(prepared?.request ? { review: prepared.request } : {}),
+        audit: audit(request, ctx, result, metadata, started),
       }
     } catch {
       // Anything unexpected in normalization, the core or the reviewer fails closed to ask.
@@ -397,6 +517,7 @@ export namespace SecurityDecisionAdapter {
             { permission: "", patterns: [], sessionID: request.sessionID, callID: request.callID },
             ctx,
             result,
+            { complete: false, truncated: false },
             started,
           ),
           metadata_complete: false,

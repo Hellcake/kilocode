@@ -46,6 +46,8 @@ export namespace SecurityDecisionRules {
   export const METADATA_INCOMPLETE = entry("SEC.V1.METADATA_INCOMPLETE", "ask")
   export const EXEC_INCOMPLETE = entry("SEC.V1.EXEC_INCOMPLETE", "ask")
   export const EXEC_COMPOSED = entry("SEC.V1.EXEC_COMPOSED", "ask")
+  /** Shell expansion can expose inherited credentials even when the surrounding command is inert. */
+  export const AMBIENT_ENVIRONMENT = entry("SEC.V1.AMBIENT_ENVIRONMENT", "ask")
   export const UNKNOWN_TARGET = entry("SEC.V1.UNKNOWN_TARGET", "ask")
   export const SENSITIVE_BOUNDARY = entry("SEC.V1.SENSITIVE_BOUNDARY", "ask")
   export const CI_AUTHORITY = entry("SEC.V1.CI_AUTHORITY", "ask")
@@ -64,17 +66,32 @@ export namespace SecurityDecisionRules {
    */
   export const DEPENDENCY_INSTALL = entry("SEC.V1.DEPENDENCY_INSTALL", "ask")
 
+  /**
+   * The command steers the host itself, or hands the work to a privileged daemon or a remote
+   * machine. The sandbox confines the calling process, not the launchd job it registers, not the
+   * container daemon that mounts the filesystem for it and not the host at the other end of an ssh
+   * connection — so confinement is not evidence here, and neither is a judgement about the command
+   * line, because the capability is the program itself.
+   */
+  export const HOST_CONTROL = entry("SEC.V1.HOST_CONTROL", "ask")
+
+  /**
+   * A change to the repository itself — staging, committing, moving refs, discarding work, or
+   * writing git configuration. Reversibility varies from trivial to none (`reset --hard`,
+   * `clean -fd`), the shape is fully recognized, and nothing a reviewer can see distinguishes the
+   * safe case from the destructive one. So it is a deterministic human boundary, not a judgement.
+   */
+  export const REPO_MUTATION = entry("SEC.V1.REPO_MUTATION", "ask")
+
   /** A write to a dependency manifest or lockfile: the same new-dependency boundary, declared. */
   export const DEPENDENCY_MANIFEST_WRITE = entry("SEC.V1.DEPENDENCY_MANIFEST_WRITE", "ask")
 
   /**
-   * An unclassified command the sandbox provably confines. This is the one rule that grants: a
-   * complete parse plus proven confinement, a closed or exactly bounded network and no escalation
-   * is the only evidence the layer has that a command it cannot name still cannot reach past the
-   * workspace. Every deterministic path rule, the dependency boundary, the XDG floor and any
-   * human-only guard outrank it.
+   * Operational confinement is useful evidence, but the current sandbox still permits ambient
+   * reads and writes to built-in Kilo roots. Keep an unclassified command at a human ask until the
+   * containment capability proves the full boundary this decision would require.
    */
-  export const CONTAINED_EXEC = entry("SEC.V1.CONTAINED_EXEC", "allow", false, ["sandbox", "restricted_network"])
+  export const CONTAINED_EXEC = entry("SEC.V1.CONTAINED_EXEC", "ask", false, ["sandbox", "restricted_network"])
 
   /** Soft ambiguity a human routinely resolves: reviewable once a reviewer exists. */
   export const DESTRUCTIVE_FS = entry("SEC.V1.DESTRUCTIVE_FS", "ask", true)
@@ -84,7 +101,7 @@ export namespace SecurityDecisionRules {
    * parse is not proof of safety — `sed -i`, `git push --force` and `npm publish` all parse cleanly.
    * It is reviewable precisely because a narrow, bounded judgement is what it needs.
    */
-  export const UNCLASSIFIED_EXEC = entry("SEC.V1.UNCLASSIFIED_EXEC", "ask", true)
+  export const UNCLASSIFIED_EXEC = entry("SEC.V1.UNCLASSIFIED_EXEC", "ask")
 
   export function result(rule: Entry): SecurityDecisionTypes.Result {
     return {

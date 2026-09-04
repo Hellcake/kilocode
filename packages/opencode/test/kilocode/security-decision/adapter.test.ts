@@ -91,6 +91,150 @@ describe("SecurityDecisionAdapter.evaluate", () => {
     expect(out.decision).toBe("pass")
   })
 
+  test("fails closed when malformed argv tokens would be discarded", () => {
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["git status"],
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: "git",
+          argv: ["git", "status", { hidden: "--upload-pack=evil" }],
+        },
+      },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_complete: true, metadata_truncated: true },
+    })
+    expect(out.review).toBeUndefined()
+  })
+
+  test("fails closed when a malformed executable would be discarded", () => {
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["git status"],
+      metadata: {
+        securityFacts: { complete: true, composed: false, executable: { hidden: "curl" }, argv: ["git", "status"] },
+      },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_complete: true, metadata_truncated: true },
+    })
+    expect(out.review).toBeUndefined()
+  })
+
+  test("fails closed when malformed effects would be discarded", () => {
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["git status"],
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: "git",
+          argv: ["git", "status"],
+          effects: [
+            { operation: "read", path: "README.md" },
+            { operation: "erase", path: "/" },
+          ],
+        },
+      },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_complete: true, metadata_truncated: true },
+    })
+    expect(out.review).toBeUndefined()
+  })
+
+  test("fails closed when a malformed effect path would be discarded", () => {
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["cat target"],
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: "cat",
+          argv: ["cat", "target"],
+          effects: [{ operation: "read", path: { hidden: "/etc/shadow" } }],
+        },
+      },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_complete: true, metadata_truncated: true },
+    })
+    expect(out.review).toBeUndefined()
+  })
+
+  test("does not send a reviewable action when reviewer path input would be truncated", () => {
+    const effects = Array.from({ length: 17 }, (_, i) => ({ operation: "delete", path: `/repo/file-${i}.txt` }))
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["sed -i s/a/b/ files"],
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: "sed",
+          argv: ["sed", "-i", "s/a/b/", "files"],
+          effects,
+        },
+      },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_truncated: true },
+    })
+    expect(out.review).toBeUndefined()
+  })
+
+  test("does not send a reviewable action when reviewer argv input would be truncated", () => {
+    // kilocode_change - a reviewable action is now a soft ambiguity, so the fixture is a delete
+    const argv = ["rm", ...Array.from({ length: 32 }, (_, i) => `arg-${i}`)]
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["rm lots-of-arguments"],
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: "rm",
+          argv,
+          classified: true,
+          effects: [{ operation: "delete", path: "docs/old.md" }],
+        },
+      },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_truncated: true },
+    })
+    expect(out.review).toBeUndefined()
+  })
+
   // kilocode_change - a clean parse is not proof of safety; an unclassified action is a reviewable ask
   test("asks for a fully parsed command whose effects it does not know", () => {
     const out = evaluate({
@@ -170,5 +314,92 @@ describe("SecurityDecisionAdapter.evaluate", () => {
     const final = SecurityDecisionAdapter.finalize(out.audit, "allow", "rule")
     expect(final.final_enforcement).toBe("allow")
     expect(final.enforcement_source).toBe("rule")
+  })
+})
+
+describe("permission-specific normalization", () => {
+  test.each([
+    ["todowrite", ["*"], {}],
+    ["board_read", ["*"], {}],
+    ["board_post", ["*"], { to: "main", type: "INFO" }],
+    ["skill", ["../../.env"], {}],
+    ["task", ["explore"], { subagent_type: "explore" }],
+    ["websearch", ["find .env examples"], { query: "find .env examples" }],
+    ["webfetch", ["https://example.com/.env"], { url: "https://example.com/.env" }],
+    ["browser_open", ["navigate:http://localhost:3000"], { url: "http://localhost:3000" }],
+    ["agent_manager", ["overview"], { action: "list" }],
+    ["workflow_tool_approval", ["read: .env"], { tools: [] }],
+  ])("does not classify %s patterns as filesystem paths", (permission, patterns, metadata) => {
+    const out = evaluate({ permission, patterns, metadata })
+
+    expect(out.decision).toBe("pass")
+    expect(out.rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test("treats an MCP resource identifier carried by read as opaque rather than a local path", () => {
+    const out = evaluate({
+      permission: "read",
+      patterns: ["mcp:docs:file:///remote/.env"],
+      metadata: { server: "docs", uri: "file:///remote/.env" },
+    })
+
+    expect(out.decision).toBe("pass")
+    expect(out.rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test("classifies grep's real search path, not its regex", () => {
+    const regex = evaluate({ permission: "grep", patterns: ["(^|/)\\.env$"], metadata: { pattern: "(^|/)\\.env$" } })
+    const hidden = evaluate({
+      permission: "grep",
+      patterns: ["harmless"],
+      metadata: { pattern: "harmless", path: "/repo/.env" },
+    })
+
+    expect(regex.rule_id).toBe("SEC.V1.NO_OPINION")
+    expect(hidden.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(hidden.decision).toBe("ask")
+  })
+
+  test("keeps glob syntax opaque while classifying its explicit search root", () => {
+    const pattern = evaluate({ permission: "glob", patterns: ["**/.env"], metadata: { pattern: "**/.env" } })
+    const outside = evaluate({
+      permission: "glob",
+      patterns: ["**/*.ts"],
+      metadata: { pattern: "**/*.ts", path: "/outside" },
+    })
+
+    expect(pattern.rule_id).toBe("SEC.V1.NO_OPINION")
+    expect(outside.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+
+  test.each([
+    ["semantic_search", ["authentication flow"], { query: "authentication flow", path: "../.env" }],
+    ["lsp", ["*"], { operation: "hover", filePath: "/repo/.env" }],
+    ["notebook_read", ["display-name"], { path: "/repo/.env" }],
+    ["notebook_edit", ["display-name"], { path: "/repo/.env" }],
+    ["notebook_execute", ["display-name"], { path: "/repo/.env" }],
+    ["repo_overview", ["owner/repo"], { repository: "owner/repo", path: "/outside/repo" }],
+    ["repo_clone", ["owner/repo"], { repository: "owner/repo", path: "/outside/repo" }],
+    ["recall", ["session"], { sessionID: "ses_other", directory: "/outside/repo" }],
+  ])("uses the concrete metadata path for %s", (permission, patterns, metadata) => {
+    const out = evaluate({ permission, patterns, metadata })
+
+    expect(out.decision).toBe("ask")
+    expect(out.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+
+  test("fails closed when resolved filesystem identities are not index-aligned with paths", () => {
+    const out = evaluate({
+      permission: "edit",
+      patterns: ["src/a.ts", "src/b.ts"],
+      metadata: { securityPaths: ["/repo/src/a.ts"] },
+    })
+
+    expect(out).toMatchObject({
+      decision: "ask",
+      rule_id: "SEC.V1.METADATA_INCOMPLETE",
+      reviewable: false,
+      audit: { metadata_truncated: true },
+    })
   })
 })
