@@ -293,6 +293,7 @@ export const dict = {
   "ui.approval.source.yolo": "af automatisk godkendelse (YOLO)",
   "ui.approval.source.session": "af en session-autogodkendelsesregel",
   "ui.approval.source.default": "som standard",
+  "ui.approval.source.auto": "af auto-tilstand",
   "ui.approval.outsideWorkspace": "(uden for dit arbejdsområde: {{file}})",
   "ui.security.reviewing": "Gennemgår",
   "ui.security.autoApproved": "Automatisk godkendt",

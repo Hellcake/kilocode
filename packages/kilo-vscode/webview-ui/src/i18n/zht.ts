@@ -279,6 +279,7 @@ export const dict = {
   "ui.approval.source.yolo": "由自動核准（YOLO）模式",
   "ui.approval.source.session": "由工作階段自動核准規則",
   "ui.approval.source.default": "預設",
+  "ui.approval.source.auto": "由自動模式",
   "ui.approval.outsideWorkspace": "（工作區之外：{{file}}）",
   "ui.security.reviewing": "審查中",
   "ui.security.autoApproved": "已自動核准",

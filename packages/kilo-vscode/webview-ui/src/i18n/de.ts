@@ -301,6 +301,7 @@ export const dict = {
   "ui.approval.source.yolo": "durch den Auto-Genehmigungsmodus (YOLO)",
   "ui.approval.source.session": "durch eine Sitzungs-Auto-Genehmigungsregel",
   "ui.approval.source.default": "standardmäßig",
+  "ui.approval.source.auto": "durch den Auto-Modus",
   "ui.approval.outsideWorkspace": "(außerhalb deines Arbeitsbereichs: {{file}})",
   "ui.security.reviewing": "Wird geprüft",
   "ui.security.autoApproved": "Automatisch genehmigt",

@@ -85,6 +85,8 @@ export interface AskOutcome {
   rule?: Rule
   /** Audit record of the deterministic security layer, when the feature flag is on. */
   security?: SecurityDecisionAdapter.Audit
+  /** For a manual outcome: whether a human actually answered, or a client replied on their behalf. */
+  readonly interactive?: boolean // kilocode_change
 }
 // kilocode_change end
 
@@ -110,6 +112,12 @@ interface PendingEntry {
    * answered rejection from a session teardown that fails every pending deferred at once.
    */
   rejection?: { interactive: boolean }
+  /**
+   * Set by `reply` when this request was approved, recording whether a human actually answered.
+   * Auto mode replies from the client without `interactive`, and an approval nobody looked at must
+   * not be reported back as one the user gave.
+   */
+  approval?: { interactive: boolean }
   // kilocode_change end
   deferred: Deferred.Deferred<void, RejectedError | CorrectedError>
 }
@@ -369,7 +377,11 @@ const layer = Layer.effect(
           }),
         ).pipe(Effect.exit)
         if (Exit.isSuccess(exit))
-          return { manual: true, security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") }
+          return {
+            manual: true,
+            interactive: entry.approval?.interactive === true, // kilocode_change
+            security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual"),
+          }
         // Only an answered rejection is enforcement; a session teardown keeps its existing semantics.
         if (!entry.rejection) return yield* Effect.failCause(exit.cause)
         const record = SecurityDecisionAdapter.finalize(
@@ -390,6 +402,7 @@ const layer = Layer.effect(
       )
       return {
         manual: true,
+        interactive: entry.approval?.interactive === true, // kilocode_change
         ...(security ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") } : {}),
       } // the user was prompted and replied
       // kilocode_change end
@@ -448,6 +461,7 @@ const layer = Layer.effect(
         return
       }
 
+      existing.approval = { interactive: input.interactive === true } // kilocode_change
       yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 

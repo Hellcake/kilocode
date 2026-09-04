@@ -9,7 +9,7 @@ export function stateMetadata(state: ToolState | undefined) {
   return state && "metadata" in state ? state.metadata : undefined
 }
 
-const SOURCES = ["agent", "global", "project", "yolo", "session", "manual", "default"] as const
+const SOURCES = ["agent", "global", "project", "yolo", "session", "manual", "auto", "default"] as const
 
 /** Read the approval/denial provenance off a tool part's metadata, if present. */
 export function toolApprovalFrom(metadata: Record<string, unknown> | undefined) {
@@ -31,6 +31,8 @@ function sourceLabel(approval: PermissionProvenance.Approval): string | undefine
       return "by auto-approve (YOLO) mode"
     case "session":
       return "by a session auto-approve rule"
+    case "auto":
+      return "by auto mode"
     case "default":
       return "by default"
     default:
@@ -44,6 +46,8 @@ export function describeApproval(metadata: Record<string, unknown> | undefined):
   if (!approval) return undefined
   const manual = approval.source === "manual"
   const decision = manual ? "approved by you" : approval.rule?.action === "deny" ? "denied" : "auto-approved"
+  // kilocode_change - auto mode answered the prompt, not the user; it has no rule to name either
+  if (approval.source === "auto") return "auto-approved by auto mode"
   if (manual) return decision
   const source = sourceLabel(approval)
   const rule = approval.rule
