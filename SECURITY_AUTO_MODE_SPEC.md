@@ -232,7 +232,7 @@ Reviewer вызывается только для `core.decision="ask" && core.r
 | Remote/network | shell/web/MCP permission | canonical scheme/host/port+effect | unbounded/private/unknown: ask | exact allowlisted host via operational proxy | `git push`, arbitrary `curl`, unknown port | existing rule or sandbox network deny |
 | Background restart gap | background tool | action+known process metadata | ask before effect | list/logs | restart/start | sandbox-enabled start/restart unavailable |
 
-Число files/lines/bytes MAY быть operational UI guard, но MUST NOT влиять на security allow/deny. Capability, path sensitivity, operation и changed region — основные signals. Empty/truncated metadata, delete и move => ask. Dependencies/slopsquatting не классифицируются V1; lockfile — ordinary edit.
+Число files/lines/bytes MAY быть operational UI guard, но MUST NOT влиять на security allow/deny. Capability, path sensitivity, operation и changed region — основные signals. Empty/truncated metadata, delete и move => ask. Dependency boundary классифицируется deterministically: package-manager install/add/get, write dependency manifest или lockfile и change script/lifecycle region => non-reviewable ask. Registry reputation, typosquatting distance и dependency-change analysis остаются вне V1.
 
 Code anchors для колонки existing deny: plan agent задаёт edit deny ([`packages/opencode/src/agent/agent.ts:188-208`](packages/opencode/src/agent/agent.ts#L188-L208)); read-only shell rules начинаются с catch-all deny ([`packages/opencode/src/kilocode/agent/index.ts:69-80`](packages/opencode/src/kilocode/agent/index.ts#L69-L80)); resolved/hard deny terminal в permission service ([`packages/opencode/src/permission/index.ts:217-228`](packages/opencode/src/permission/index.ts#L217-L228)); restricted mode suppresses native MCP registration ([`packages/opencode/src/session/tools.ts:461-464`](packages/opencode/src/session/tools.ts#L461-L464)); sandboxed background start/restart отклоняются до action ([`packages/opencode/src/kilocode/tool/background-process.ts:128-130`](packages/opencode/src/kilocode/tool/background-process.ts#L128-L130)).
 
@@ -292,7 +292,7 @@ Initial record пишется после adapter/core/reviewer и до auto-exec
 
 ## 13. Non-goals и гарантии
 
-Non-goals V1: cross-call exfiltration/taint tracking; supply-chain/slopsquatting и dependency-change analysis; universal контроль всех tool calls; cross-request blocking/sequence analysis; executable provenance resolution; semantic intent inference из conversation/repository content; LLM reviewer implementation; trusted human attestation; bounded MCP metadata; отдельный metrics storage/export API.
+Non-goals V1: cross-call exfiltration/taint tracking; registry reputation, typosquatting distance и dependency-change analysis (deterministic dependency boundary из раздела 9 — не подмена этого анализа); universal контроль всех tool calls; cross-request blocking/sequence analysis; executable provenance resolution; semantic intent inference из conversation/repository content; LLM reviewer implementation; trusted human attestation; bounded MCP metadata; отдельный metrics storage/export API.
 
 Слой не ловит tool/custom/plugin paths, не вызывающие authoritative permission ask; multi-call exfiltration; benign-looking project code с runtime side effects вне наблюдаемых facts; TOCTOU после metadata capture; supply-chain attacks; kernel/backend escape; destinations, скрытые внутри opaque delegated tool. Причина — V1 per-request и опирается на существующие permission interception points; MCP/metadata coverage неполна.
 

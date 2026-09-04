@@ -57,6 +57,16 @@ export namespace SecurityDecisionRules {
   /** Adapter, core or reviewer failure — always fails closed to ask. */
   export const INTERNAL_ERROR = entry("SEC.V1.INTERNAL_ERROR", "ask")
 
+  /**
+   * Fetching an external package. The name is chosen by the model, so allowing it without a human
+   * is what makes a hallucinated or squatted name reach the machine. Never reviewable: the reviewer
+   * sees only the command line, which is exactly the evidence that cannot tell the two apart.
+   */
+  export const DEPENDENCY_INSTALL = entry("SEC.V1.DEPENDENCY_INSTALL", "ask")
+
+  /** A write to a dependency manifest or lockfile: the same new-dependency boundary, declared. */
+  export const DEPENDENCY_MANIFEST_WRITE = entry("SEC.V1.DEPENDENCY_MANIFEST_WRITE", "ask")
+
   /** Soft ambiguity a human routinely resolves: reviewable once a reviewer exists. */
   export const DESTRUCTIVE_FS = entry("SEC.V1.DESTRUCTIVE_FS", "ask", true)
 

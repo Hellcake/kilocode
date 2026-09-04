@@ -1,5 +1,6 @@
 import path from "path"
 import { SecurityDecision } from "./core"
+import { SecurityManifest } from "./manifest"
 import { SecurityDecisionRules as R } from "./rules"
 import { SecurityReviewer } from "./reviewer"
 import type { SecurityAuthority } from "./authority"
@@ -120,7 +121,7 @@ export namespace SecurityDecisionAdapter {
   }
 
   /** Canonicalize a permission pattern into a path fact. No IO: the workspace is compared textually. */
-  function classify(pattern: string, workspace: string): T.PathFact {
+  function classify(pattern: string, workspace: string, region: SecurityManifest.Region = "other"): T.PathFact {
     if (!pattern || pattern === "*") return { path: pattern, inWorkspace: true, class: "unknown" }
     const raw = posix(pattern)
     const normalized = path.posix.normalize(raw)
@@ -140,7 +141,7 @@ export namespace SecurityDecisionAdapter {
       path: target,
       inWorkspace,
       class: cls,
-      ...(cls === "package_manifest" ? { region: "other" as const } : {}),
+      ...(cls === "package_manifest" ? { region } : {}),
     }
   }
 
@@ -157,7 +158,7 @@ export namespace SecurityDecisionAdapter {
       return "control_plane"
     if (/(^|\/)\.github\/workflows\//.test(target) || base === ".gitlab-ci.yml" || /(^|\/)\.circleci\//.test(target))
       return "ci"
-    if (base === "package.json") return "package_manifest"
+    if (SecurityManifest.is(base)) return "package_manifest"
     if (
       base === ".env" ||
       base.startsWith(".env.") ||
@@ -266,7 +267,9 @@ export namespace SecurityDecisionAdapter {
           : (() => {
               // A symlink must be judged by what it points at, so the resolved target wins.
               const real = resolved(request)
-              return request.patterns.map((pattern, index) => classify(real?.[index] ?? pattern, ctx.workspace))
+              // The diff is the only view of *what* changed, so the manifest region comes from it.
+              const region = SecurityManifest.region(request.metadata?.["diff"])
+              return request.patterns.map((pattern, index) => classify(real?.[index] ?? pattern, ctx.workspace, region))
             })()
     const facts = exec(request)
     const complete = !EXECS.has(request.permission) || facts !== undefined

@@ -150,6 +150,59 @@ export namespace SecurityDecision {
     return exec.argv !== undefined && exec.argv.length > 0 && inertGit(exec.argv)
   }
 
+  /**
+   * Package managers, by the verbs that reach outside the repository for a package: adding one,
+   * resolving a manifest into a tree, or fetching one only to run it. The name that follows is
+   * whatever the model wrote, and nothing observable here can tell a real package from a
+   * hallucinated one, so the whole family is a human boundary rather than a classification problem.
+   */
+  const PACKAGE_VERBS: Record<string, ReadonlySet<string>> = {
+    npm: new Set(["install", "i", "add", "ci", "install-test", "it", "exec", "x", "update", "up"]),
+    pnpm: new Set(["install", "i", "add", "dlx", "update", "up"]),
+    yarn: new Set(["install", "add", "dlx", "up", "upgrade"]),
+    bun: new Set(["install", "i", "add", "x", "update"]),
+    deno: new Set(["install", "add", "cache"]),
+    pip: new Set(["install", "download"]),
+    pip3: new Set(["install", "download"]),
+    uv: new Set(["add", "sync", "install", "pip", "tool"]),
+    poetry: new Set(["add", "install", "update"]),
+    pdm: new Set(["add", "install", "update"]),
+    conda: new Set(["install", "create"]),
+    cargo: new Set(["add", "install", "fetch"]),
+    go: new Set(["get", "install"]),
+    gem: new Set(["install", "fetch"]),
+    bundle: new Set(["add", "install", "update"]),
+    composer: new Set(["require", "install", "update"]),
+  }
+
+  /** Executables that are themselves a fetch-and-run: the verb is the package name. */
+  const PACKAGE_RUNNERS = new Set(["npx", "pnpx", "bunx", "uvx", "pipx"])
+
+  /** Managers that install from the lockfile when invoked with no verb at all. */
+  const PACKAGE_BARE = new Set(["yarn"])
+
+  /**
+   * True when the command reaches for an external package.
+   *
+   * The verb is matched anywhere in the arguments rather than at a fixed position: a manager can be
+   * redirected first (`npm --prefix ./app install`), and over-reporting here only turns a reviewable
+   * ask into a human one, while under-reporting would hand the install to the reviewer.
+   */
+  function installs(exec: SecurityDecisionTypes.ExecFact) {
+    const name = exec.executable
+    if (!name) return false
+    if (PACKAGE_RUNNERS.has(name)) return true
+    const argv = exec.argv
+    if (!argv || argv.length === 0) return false
+    if (PACKAGE_BARE.has(name) && argv.length === 1) return true
+    // `python -m pip install x` runs the manager as a module, so the manager is the argument.
+    const module = argv.indexOf("-m")
+    const via = module >= 0 ? argv[module + 1] : undefined
+    const verbs = PACKAGE_VERBS[name] ?? (via ? PACKAGE_VERBS[via] : undefined)
+    if (!verbs) return via !== undefined && PACKAGE_RUNNERS.has(via)
+    return argv.slice(1).some((token) => verbs.has(token))
+  }
+
   function target(input: SecurityDecisionTypes.Input, fact: SecurityDecisionTypes.PathFact): R.Entry {
     // A shell command can read one target and write another, so a fact's own operation wins.
     const op = fact.operation ?? input.action.operation
@@ -176,8 +229,14 @@ export namespace SecurityDecision {
     if (fact.class === "unknown") return R.UNKNOWN_TARGET
     if (fact.class === "sensitive" || !fact.inWorkspace) return R.SENSITIVE_BOUNDARY
     if (fact.class === "ci") return R.CI_AUTHORITY
-    // Dependency and lockfile edits are ordinary in V1; only the executable region is authority.
-    if (fact.class === "package_manifest" && fact.region === "scripts") return R.PACKAGE_EXECUTION
+    // A manifest declares what the project pulls in and what runs around an install. Both are the
+    // same human boundary as the install itself; the region only decides which rule names it, and an
+    // undetermined region stays on the stricter side rather than falling through to an ordinary edit.
+    if (fact.class === "package_manifest") {
+      if (op === "read") return R.NO_OPINION
+      if (WRITES.has(op)) return fact.region === "scripts" ? R.PACKAGE_EXECUTION : R.DEPENDENCY_MANIFEST_WRITE
+      return R.AMBIGUOUS_OPERATION
+    }
     if (DESTRUCTIVE.has(op)) return R.DESTRUCTIVE_FS
     return R.NO_OPINION
   }
@@ -213,7 +272,9 @@ export namespace SecurityDecision {
       if (exec.composed) return R.EXEC_COMPOSED
     }
 
-    let winner: R.Entry = R.NO_OPINION
+    // A fetch of an external package is decided before any path rule: the command has no file
+    // effect the scan can see, and its target is a name rather than a path.
+    let winner: R.Entry = exec && installs(exec) ? R.DEPENDENCY_INSTALL : R.NO_OPINION
     for (const fact of input.action.paths) {
       const rule = target(input, fact)
       if (strictness(rule.decision) > strictness(winner.decision)) winner = rule
