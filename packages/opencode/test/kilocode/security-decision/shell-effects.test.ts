@@ -6,6 +6,7 @@ import path from "path"
 import * as CrossSpawnSpawner from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ShellPermission } from "@/tool/shell"
+import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import type { Permission } from "@/permission"
 import { SessionID, MessageID } from "@/session/schema"
 import { provideTestInstance, tmpdir } from "../../fixture/fixture"
@@ -45,10 +46,11 @@ const facts = async (command: string, cwd: string) => {
     argv?: string[]
     executable?: string
     classified?: boolean
+    ambient?: boolean
     complete?: boolean
     composed?: boolean
     decomposable?: boolean
-    commands?: Array<{ executable?: string; argv?: string[]; classified?: boolean }>
+    commands?: Array<{ executable?: string; argv?: string[]; classified?: boolean; ambient?: boolean }>
   }
 }
 
@@ -81,6 +83,32 @@ const withTmp = (fn: (cwd: string) => Promise<void>) => async () => {
 }
 
 describe.skipIf(process.platform === "win32")("shell file effects", () => {
+  test(
+    "operational write containment cannot auto-allow an unclassified command",
+    withTmp(async (cwd) => {
+      const command = `python -c 'open(".github/workflows/pwn.yml", "w").write("x")'`
+      const securityFacts = await facts(command, cwd)
+      const out = SecurityDecisionAdapter.evaluate(
+        {
+          permission: "bash",
+          patterns: [command],
+          metadata: { securityFacts },
+          sessionID: "ses_contained",
+        },
+        {
+          workspace: cwd,
+          effective: "allow",
+          humanOnly: false,
+          floor: { action: "allow", authority: "untrusted", conflict: false },
+          containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+        },
+      )
+      expect(out.decision).toBe("ask")
+      expect(out.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+      expect(out.reviewable).toBe(false)
+    }),
+  )
+
   test(
     "an append redirect into a git hook is an update of that hook",
     withTmp(async (cwd) => {
@@ -248,6 +276,133 @@ describe.skipIf(process.platform === "win32")("shell exec facts", () => {
       expect(out.argv).toBeUndefined()
     }),
   )
+
+  test(
+    "marks shell parameter expansion by syntax without depending on credential names",
+    withTmp(async (cwd) => {
+      expect(await facts('echo "$PROJECT_VALUE"', cwd)).toMatchObject({ executable: "echo", ambient: true })
+      expect(await facts("printf '%s\\n' \"${BUILD_CONTEXT}\"", cwd)).toMatchObject({
+        executable: "printf",
+        ambient: true,
+      })
+      expect(await facts("echo '${STATIC_TEXT}'", cwd)).toMatchObject({ executable: "echo", ambient: false })
+    }),
+  )
+
+  test(
+    "git show object syntax is not inert even when a metadata flag is present",
+    withTmp(async (cwd) => {
+      const command = "git show --stat HEAD:.env"
+      const securityFacts = await facts(command, cwd)
+      const out = SecurityDecisionAdapter.evaluate(
+        { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_git_show" },
+        {
+          workspace: cwd,
+          effective: "allow",
+          humanOnly: false,
+          floor: { action: "allow", authority: "untrusted", conflict: false },
+          containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+        },
+      )
+
+      expect(securityFacts.argv).toEqual(["git", "show", "--stat", "HEAD:.env"])
+      expect(out.decision).toBe("ask")
+      expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    }),
+  )
+})
+
+describe.skipIf(process.platform === "win32")("ambient environment disclosure", () => {
+  test(
+    "output commands with parameter expansion cannot pass as inert",
+    withTmp(async (cwd) => {
+      for (const command of ['echo "$PROJECT_VALUE"', "printf '%s\\n' \"${BUILD_CONTEXT}\""]) {
+        const securityFacts = await facts(command, cwd)
+        const out = SecurityDecisionAdapter.evaluate(
+          { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_ambient" },
+          {
+            workspace: cwd,
+            effective: "allow",
+            humanOnly: false,
+            floor: { action: "allow", authority: "untrusted", conflict: false },
+            containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+          },
+        )
+
+        expect(out.decision).toBe("ask")
+        expect(out.rule_id).toBe("SEC.V1.AMBIENT_ENVIRONMENT")
+        expect(out.reviewable).toBe(false)
+      }
+    }),
+  )
+
+  test(
+    "environment readers are non-reviewable without relying on containment",
+    withTmp(async (cwd) => {
+      for (const command of ["env", "printenv", "printenv PATH", "set"]) {
+        const securityFacts = await facts(command, cwd)
+        const out = SecurityDecisionAdapter.evaluate(
+          { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_ambient" },
+          {
+            workspace: cwd,
+            effective: "allow",
+            humanOnly: false,
+            floor: { action: "allow", authority: "untrusted", conflict: false },
+            containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+          },
+        )
+
+        expect({ command, ambient: securityFacts.ambient }).toEqual({ command, ambient: true })
+        expect(out.decision).toBe("ask")
+        expect(out.rule_id).toBe("SEC.V1.AMBIENT_ENVIRONMENT")
+        expect(out.reviewable).toBe(false)
+      }
+    }),
+  )
+
+  test(
+    "environment declarations cannot bypass the permission decision",
+    withTmp(async (cwd) => {
+      for (const command of ["export -p", "declare -x", "typeset -x"]) {
+        const securityFacts = await facts(command, cwd)
+        const out = SecurityDecisionAdapter.evaluate(
+          { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_ambient" },
+          {
+            workspace: cwd,
+            effective: "allow",
+            humanOnly: false,
+            floor: { action: "allow", authority: "untrusted", conflict: false },
+            containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+          },
+        )
+
+        expect(out.decision).toBe("ask")
+        expect(out.reviewable).toBe(false)
+      }
+    }),
+  )
+
+  test(
+    "literal output remains inert",
+    withTmp(async (cwd) => {
+      for (const command of ["echo hello", "printf '%s\\n' hello", "echo '${STATIC_TEXT}'"]) {
+        const securityFacts = await facts(command, cwd)
+        const out = SecurityDecisionAdapter.evaluate(
+          { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_literal" },
+          {
+            workspace: cwd,
+            effective: "allow",
+            humanOnly: false,
+            floor: { action: "allow", authority: "untrusted", conflict: false },
+            containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+          },
+        )
+
+        expect(out.rule_id).toBe("SEC.V1.NO_OPINION")
+        expect(out.decision).toBe("pass")
+      }
+    }),
+  )
 })
 
 /**
@@ -263,9 +418,36 @@ describe.skipIf(process.platform === "win32")("composed shell commands", () => {
       expect(out.composed).toBe(true)
       expect(out.decomposable).toBe(true)
       expect(out.commands).toEqual([
-        { executable: "cd", argv: ["cd", "app"], classified: false },
-        { executable: "npm", argv: ["npm", "test"], classified: false },
+        { executable: "cd", argv: ["cd", "app"], classified: false, ambient: false },
+        { executable: "npm", argv: ["npm", "test"], classified: false, ambient: false },
       ])
+    }),
+  )
+
+  test(
+    "a sequence longer than the adapter bound fails closed instead of being decided by its prefix",
+    withTmp(async (cwd) => {
+      const command = Array.from({ length: 33 }, () => "git status").join("; ")
+      const securityFacts = await facts(command, cwd)
+      const out = SecurityDecisionAdapter.evaluate(
+        { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_truncated" },
+        {
+          workspace: cwd,
+          effective: "allow",
+          humanOnly: false,
+          floor: { action: "allow", authority: "untrusted", conflict: false },
+          containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+        },
+      )
+
+      expect(securityFacts.commands).toHaveLength(33)
+      expect(out).toMatchObject({
+        decision: "ask",
+        rule_id: "SEC.V1.METADATA_INCOMPLETE",
+        reviewable: false,
+        audit: { metadata_complete: true, metadata_truncated: true },
+      })
+      expect(out.review).toBeUndefined()
     }),
   )
 
@@ -275,8 +457,8 @@ describe.skipIf(process.platform === "win32")("composed shell commands", () => {
       const out = await facts("cat src/a.ts | wc -l", cwd)
       expect(out.decomposable).toBe(true)
       expect(out.commands).toEqual([
-        { executable: "cat", argv: ["cat", "src/a.ts"], classified: true },
-        { executable: "wc", argv: ["wc", "-l"], classified: true },
+        { executable: "cat", argv: ["cat", "src/a.ts"], classified: true, ambient: false },
+        { executable: "wc", argv: ["wc", "-l"], classified: true, ambient: false },
       ])
     }),
   )
@@ -286,19 +468,39 @@ describe.skipIf(process.platform === "win32")("composed shell commands", () => {
     withTmp(async (cwd) => {
       const out = await facts("npm test", cwd)
       expect(out.composed).toBe(false)
-      expect(out.commands).toEqual([{ executable: "npm", argv: ["npm", "test"], classified: false }])
+      expect(out.commands).toEqual([{ executable: "npm", argv: ["npm", "test"], classified: false, ambient: false }])
     }),
   )
 
-  test.each([
-    ["echo $(git rev-parse HEAD)"],
-    ["cat <(ls)"],
-    ["(cd src && rm a.ts)"],
-    ["cat <<EOF\nhi\nEOF"],
-  ])("%s stays opaque", (command) =>
+  test(
+    "an ambient expansion in one sequenced command prevents an inert prefix decision",
     withTmp(async (cwd) => {
-      expect((await facts(command, cwd)).decomposable).toBe(false)
-    })(),
+      const command = 'echo "$PROJECT_VALUE"; pwd'
+      const securityFacts = await facts(command, cwd)
+      const out = SecurityDecisionAdapter.evaluate(
+        { permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_sequence_ambient" },
+        {
+          workspace: cwd,
+          effective: "allow",
+          humanOnly: false,
+          floor: { action: "allow", authority: "untrusted", conflict: false },
+          containment: { sandbox: "off", network: "allow", destinations: [], escalated: false },
+        },
+      )
+
+      expect(securityFacts.commands?.at(0)?.ambient).toBe(true)
+      expect(out.decision).toBe("ask")
+      expect(out.rule_id).toBe("SEC.V1.AMBIENT_ENVIRONMENT")
+      expect(out.reviewable).toBe(false)
+    }),
+  )
+
+  test.each([["echo $(git rev-parse HEAD)"], ["cat <(ls)"], ["(cd src && rm a.ts)"], ["cat <<EOF\nhi\nEOF"]])(
+    "%s stays opaque",
+    (command) =>
+      withTmp(async (cwd) => {
+        expect((await facts(command, cwd)).decomposable).toBe(false)
+      })(),
   )
 
   test(
@@ -310,7 +512,6 @@ describe.skipIf(process.platform === "win32")("composed shell commands", () => {
     }),
   )
 })
-
 
 /**
  * A sandbox escalation removes the confinement the `bash` decision may have relied on, so it has to

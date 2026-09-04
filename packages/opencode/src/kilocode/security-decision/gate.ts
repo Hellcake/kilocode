@@ -31,6 +31,11 @@ export namespace KiloSecurityGate {
     /** True when an existing human-only or config-protection guard already forces a prompt. */
     humanOnly: boolean
     containment?: T.Containment & { probe_id?: string; checked_at?: number }
+    /**
+     * Progress sink. The reviewer stage runs inside this call, so without a record emitted before it
+     * a caller cannot distinguish "no reviewer ran" from "a reviewer is deciding right now".
+     */
+    audit?: (record: SecurityDecisionAdapter.Audit) => Effect.Effect<void>
   }>
 
   const UNKNOWN_CONTAINMENT: T.Containment = {
@@ -114,6 +119,19 @@ export namespace KiloSecurityGate {
   ) {
     if (directive.decision !== "ask" || !directive.reviewable || !directive.review) return directive
     if (input.humanOnly || floor.conflict) return directive
+    // Nothing is asked of a model that is not there, so nothing is reported as running either.
+    if (!SecurityReviewer.bound()) return directive
+
+    if (input.audit)
+      yield* input
+        .audit(
+          SecurityDecisionAdapter.finalize(
+            { ...directive.audit, reviewer: SecurityReviewer.RUNNING },
+            "ask_pending",
+            "security",
+          ),
+        )
+        .pipe(Effect.catchCause(() => Effect.void))
 
     const reviewed = yield* SecurityReviewer.review(
       {

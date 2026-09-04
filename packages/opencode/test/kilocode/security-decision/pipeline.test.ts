@@ -112,6 +112,47 @@ it.instance("keeps an auto-approval when the core has no opinion, and records th
   }),
 )
 
+it.instance("does not turn an opaque wildcard permission into a filesystem security ask", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    const permission = yield* Permission.Service
+    const fiber = yield* ask({
+      sessionID,
+      permission: "todowrite",
+      patterns: ["*"],
+      always: ["*"],
+      metadata: {},
+      ruleset: [{ permission: "todowrite", pattern: "*", action: "allow" }],
+    }).pipe(Effect.forkScoped)
+    yield* Effect.sleep("25 millis")
+    expect(yield* permission.list()).toHaveLength(0)
+    const outcome = yield* Fiber.join(fiber)
+    expect(outcome.manual).toBe(false)
+    expect(outcome.security?.rule_id).toBe("SEC.V1.NO_OPINION")
+  }),
+)
+
+it.instance("raises an allowed grep when its metadata path is sensitive", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    const permission = yield* Permission.Service
+    const fiber = yield* ask({
+      sessionID,
+      permission: "grep",
+      patterns: ["harmless"],
+      always: ["*"],
+      metadata: { pattern: "harmless", path: ".env" },
+      ruleset: [{ permission: "grep", pattern: "*", action: "allow" }],
+    }).pipe(Effect.forkScoped)
+    const request = yield* published(permission)
+    expect(SecurityAsk.of(request.metadata)?.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    yield* permission.reply({ requestID: request.id, reply: "once", interactive: true })
+    const outcome = yield* Fiber.join(fiber)
+    expect(outcome.manual).toBe(true)
+    expect(outcome.security?.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  }),
+)
+
 it.instance("raises an auto-approved CI workflow edit to a pending human ask", () =>
   Effect.gen(function* () {
     process.env["KILO_SECURITY_DECISION"] = "1"
@@ -152,14 +193,25 @@ const npmTest = {
   ruleset: [{ permission: "bash", pattern: "*", action: "allow" as const }],
 }
 
-it.instance("lets an unclassified command through when the sandbox provably confines it", () =>
+it.instance("keeps a contained unclassified command pending for a human", () =>
   Effect.gen(function* () {
     process.env["KILO_SECURITY_DECISION"] = "1"
-    const outcome = yield* ask({
+    const permission = yield* Permission.Service
+    const fiber = yield* ask({
       ...npmTest,
       containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
-    })
-    expect(outcome.manual).toBe(false)
+    }).pipe(Effect.forkScoped)
+    const pending = yield* Effect.gen(function* () {
+      while (true) {
+        const list = yield* permission.list()
+        if (list.length === 1) return list
+        yield* Effect.sleep("10 millis")
+      }
+    }).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("timed out")) }))
+    expect(SecurityAsk.of(pending[0]!.metadata)?.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    yield* permission.reply({ requestID: pending[0]!.id, reply: "once", interactive: true })
+    const outcome = yield* Fiber.join(fiber)
+    expect(outcome.manual).toBe(true)
     expect(outcome.security?.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
     expect(outcome.security?.final_enforcement).toBe("allow")
     expect(outcome.security?.requirements).toEqual(["sandbox", "restricted_network"])

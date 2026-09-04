@@ -42,6 +42,8 @@ export namespace SecurityDecisionTypes {
     argv?: readonly string[]
     /** Whether the executable's own file semantics are known to the scan. */
     classified?: boolean
+    /** Whether the command can expose values inherited from the process environment. */
+    ambient?: boolean
   }>
 
   export type ExecFact = Readonly<{
@@ -54,6 +56,8 @@ export namespace SecurityDecisionTypes {
     argv?: readonly string[]
     /** Whether the executable's own file semantics are known to the scan. */
     classified?: boolean
+    /** Whether the command can expose values inherited from the process environment. */
+    ambient?: boolean
     /**
      * Whether the composition is pure sequencing over fully recovered commands. A composed action
      * is judged command by command only when this holds; otherwise it stays opaque.

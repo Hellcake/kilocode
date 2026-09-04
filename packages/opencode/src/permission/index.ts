@@ -281,6 +281,7 @@ const layer = Layer.effect(
             resolved,
             humanOnly: forceAsk || (isProtected && !trusted),
             containment,
+            ...(audit ? { audit } : {}), // kilocode_change - surface the reviewer stage while it runs
           })
         : undefined
       // The initial record is written before any effect: an ask that is never answered, or is

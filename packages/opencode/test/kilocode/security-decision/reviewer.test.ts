@@ -11,7 +11,7 @@ import { SecurityDecisionRules as R } from "../../../src/kilocode/security-decis
 afterEach(() => SecurityReviewer.reset())
 
 const request: SecurityReviewer.Request = {
-  rule_id: "SEC.V1.UNCLASSIFIED_EXEC",
+  rule_id: "SEC.V1.DESTRUCTIVE_FS",
   action: {
     kind: "bash",
     operation: "exec",
@@ -23,7 +23,7 @@ const request: SecurityReviewer.Request = {
   containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
 }
 
-const reviewable = R.result(R.UNCLASSIFIED_EXEC)
+const reviewable = R.result(R.DESTRUCTIVE_FS)
 
 const bind = (fn: SecurityReviewer.Complete) => SecurityReviewer.bind(fn)
 const answer = (text: string) => bind(() => Promise.resolve(text))
@@ -40,8 +40,10 @@ describe("SecurityReviewer routing", () => {
   })
 
   test("only a reviewable ask is offered to it", () => {
-    expect(R.result(R.UNCLASSIFIED_EXEC).reviewable).toBe(true)
     expect(R.result(R.DESTRUCTIVE_FS).reviewable).toBe(true)
+    expect(R.result(R.UNCLASSIFIED_EXEC).reviewable).toBe(false)
+    expect(R.result(R.HOST_CONTROL).reviewable).toBe(false)
+    expect(R.result(R.REPO_MUTATION).reviewable).toBe(false)
     expect(R.result(R.SENSITIVE_BOUNDARY).reviewable).toBe(false)
     expect(R.result(R.CI_AUTHORITY).reviewable).toBe(false)
     expect(R.result(R.AUTHORITY_FLOOR).reviewable).toBe(false)
@@ -178,10 +180,10 @@ describe("SecurityReviewer prompt", () => {
     expect(Object.keys(payload.action).sort()).toEqual(["argv", "executable", "kind", "operation", "paths"])
   })
 
-  test("bounds a runaway command line", () => {
+  test("rejects a command line that would be truncated instead of building a prefix request", () => {
     const argv = Array.from({ length: 200 }, (_, i) => `arg${i}`.padEnd(500, "x"))
-    const bounded = SecurityReviewer.request({
-      rule_id: "SEC.V1.UNCLASSIFIED_EXEC",
+    const out = SecurityReviewer.request({
+      rule_id: "SEC.V1.DESTRUCTIVE_FS",
       kind: "bash",
       operation: "exec",
       executable: "sh",
@@ -190,13 +192,13 @@ describe("SecurityReviewer prompt", () => {
       containment: request.containment,
     })
 
-    expect(bounded.action.argv.length).toBeLessThanOrEqual(32)
-    for (const item of bounded.action.argv) expect(item.length).toBeLessThanOrEqual(128)
+    expect(out.truncated).toBe(true)
+    expect(out.request).toBeUndefined()
   })
 
   test("carries every command of a decomposed sequence", () => {
     const out = SecurityReviewer.request({
-      rule_id: "SEC.V1.UNCLASSIFIED_EXEC",
+      rule_id: "SEC.V1.DESTRUCTIVE_FS",
       kind: "bash",
       operation: "exec",
       commands: [
@@ -207,19 +209,20 @@ describe("SecurityReviewer prompt", () => {
       containment: request.containment,
     })
 
-    expect(out.action.commands).toEqual([
+    expect(out.truncated).toBe(false)
+    expect(out.request?.action.commands).toEqual([
       { executable: "cd", argv: ["cd", "app"] },
       { executable: "npm", argv: ["npm", "test"] },
     ])
   })
 
-  test("bounds a runaway sequence", () => {
+  test("rejects a sequence that would be truncated instead of building a prefix request", () => {
     const commands = Array.from({ length: 100 }, (_, i) => ({
       executable: `cmd${i}`.padEnd(500, "x"),
       argv: Array.from({ length: 200 }, (_, j) => `arg${j}`.padEnd(500, "x")),
     }))
     const out = SecurityReviewer.request({
-      rule_id: "SEC.V1.UNCLASSIFIED_EXEC",
+      rule_id: "SEC.V1.DESTRUCTIVE_FS",
       kind: "bash",
       operation: "exec",
       commands,
@@ -227,11 +230,36 @@ describe("SecurityReviewer prompt", () => {
       containment: request.containment,
     })
 
-    expect(out.action.commands!.length).toBeLessThanOrEqual(16)
-    for (const item of out.action.commands!) {
-      expect(item.executable!.length).toBeLessThanOrEqual(128)
-      expect(item.argv.length).toBeLessThanOrEqual(32)
-      for (const token of item.argv) expect(token.length).toBeLessThanOrEqual(128)
-    }
+    expect(out.truncated).toBe(true)
+    expect(out.request).toBeUndefined()
+  })
+
+  test("rejects paths and task text that would be truncated", () => {
+    const paths = Array.from({ length: 17 }, (_, i) => ({
+      class: "ordinary" as const,
+      inWorkspace: true,
+      operation: "delete",
+      path: `src/file-${i}.ts`,
+    }))
+
+    expect(
+      SecurityReviewer.request({
+        rule_id: "SEC.V1.DESTRUCTIVE_FS",
+        kind: "bash",
+        operation: "exec",
+        paths,
+        containment: request.containment,
+      }),
+    ).toEqual({ truncated: true })
+    expect(
+      SecurityReviewer.request({
+        rule_id: "SEC.V1.DESTRUCTIVE_FS",
+        kind: "bash",
+        operation: "exec",
+        paths: [],
+        containment: request.containment,
+        task: "x".repeat(201),
+      }),
+    ).toEqual({ truncated: true })
   })
 })

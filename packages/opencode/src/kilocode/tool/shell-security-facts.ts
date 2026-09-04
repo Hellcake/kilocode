@@ -25,11 +25,16 @@ const SEQUENCE = ["pipeline", "list"] as const
  */
 const REWRITING = ["command_substitution", "process_substitution", "subshell", "heredoc_redirect"] as const
 
+/** Shell commands whose normal operation can expose values inherited from the parent process. */
+const ENVIRONMENT = new Set(["declare", "env", "export", "printenv", "set", "typeset"])
+
 /** One command of a sequence, as the security layer sees it. */
 export type ShellCommandFacts = {
   executable?: string
   argv?: string[]
   classified?: boolean
+  /** The command can expose inherited process environment through expansion or its own operation. */
+  ambient?: boolean
 }
 
 export type ShellSecurityFacts = {
@@ -94,6 +99,7 @@ function unit(node: Node): ShellCommandFacts {
     ...(name ? { executable: name } : {}),
     argv: argv(node),
     classified: name !== undefined && commandOperation(name) !== undefined,
+    ambient: ENVIRONMENT.has(name ?? "") || present(node, ["simple_expansion", "expansion", "arithmetic_expansion"]),
   }
 }
 

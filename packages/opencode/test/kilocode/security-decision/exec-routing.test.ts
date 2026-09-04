@@ -38,7 +38,6 @@ const shell = (command: string, effects: Effect[] = [], override: Record<string,
 describe("unclassified shell actions", () => {
   test.each([
     ["sed -i s/a/b/ src/a.ts"],
-    ["git push --force"],
     ["npm publish"],
     ["python -c print(1)"],
     ["npm test"],
@@ -49,22 +48,40 @@ describe("unclassified shell actions", () => {
 
     expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
     expect(out.decision).toBe("ask")
-    expect(out.reviewable).toBe(true)
+    expect(out.reviewable).toBe(false)
   })
 
   test("a command whose executable the scan could not name is unclassified too", () => {
     const out = shell("weird", [], { executable: undefined, argv: undefined })
 
     expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
-    expect(out.reviewable).toBe(true)
+    expect(out.reviewable).toBe(false)
   })
 
   test("the reviewable ask carries a bounded request for the reviewer", () => {
-    const out = shell("sed -i s/a/b/ src/a.ts", [{ operation: "update", path: "/w/src/a.ts" }])
+    // Only a contained, structurally simple invocation is ever offered to a reviewer.
+    const out = SecurityDecisionAdapter.evaluate(
+      {
+        permission: "bash",
+        patterns: ["npm test"],
+        metadata: {
+          securityFacts: {
+            complete: true,
+            composed: false,
+            executable: "npm",
+            argv: ["npm", "test"],
+            effects: [],
+            classified: false,
+          },
+        },
+        sessionID,
+      },
+      { ...ctx, containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false } },
+    )
 
     expect(out.review).toBeDefined()
-    expect(out.review?.action.executable).toBe("sed")
-    expect(out.review?.action.argv).toEqual(["sed", "-i", "s/a/b/", "src/a.ts"])
+    expect(out.review?.action.executable).toBe("npm")
+    expect(out.review?.action.argv).toEqual(["npm", "test"])
   })
 })
 
@@ -97,8 +114,8 @@ describe("deterministically benign shell actions", () => {
   })
 
   test("a mutating or content-printing git subcommand is not benign", () => {
-    expect(shell("git commit -m x").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
-    expect(shell("git config core.hooksPath .githooks").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(shell("git commit -m x").rule_id).toBe("SEC.V1.REPO_MUTATION")
+    expect(shell("git config core.hooksPath .githooks").rule_id).toBe("SEC.V1.REPO_MUTATION")
     expect(shell("git").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
     expect(shell("git diff").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
     expect(shell("git log -p").rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
@@ -203,7 +220,7 @@ describe("decomposed shell sequences", () => {
   test("an unclassified command inside a sequence is unclassified, not opaque", () => {
     const out = sequence([unit("cd app"), unit("npm test")])
     expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
-    expect(out.reviewable).toBe(true)
+    expect(out.reviewable).toBe(false)
   })
 
   test("a sequence of proven-inert commands has no opinion", () => {
@@ -212,9 +229,10 @@ describe("decomposed shell sequences", () => {
   })
 
   test("a sequence of classified readers is decided by its effects alone", () => {
-    const out = sequence([unit("cat src/a.ts", true), unit("wc -l", true)], [
-      { operation: "read", path: "/w/src/a.ts" },
-    ])
+    const out = sequence(
+      [unit("cat src/a.ts", true), unit("wc -l", true)],
+      [{ operation: "read", path: "/w/src/a.ts" }],
+    )
     expect(out.rule_id).toBe("SEC.V1.NO_OPINION")
   })
 
@@ -225,9 +243,10 @@ describe("decomposed shell sequences", () => {
   })
 
   test("a file effect anywhere in the sequence still reaches its path rule", () => {
-    const out = sequence([unit("npm test"), unit("echo done")], [
-      { operation: "update", path: "/w/.git/hooks/pre-commit" },
-    ])
+    const out = sequence(
+      [unit("npm test"), unit("echo done")],
+      [{ operation: "update", path: "/w/.git/hooks/pre-commit" }],
+    )
     expect(out.rule_id).toBe("SEC.V1.GIT_HOOK_WRITE")
     expect(out.decision).toBe("deny")
   })
@@ -243,15 +262,33 @@ describe("decomposed shell sequences", () => {
   })
 
   test("a decomposed sequence is contained evidence like a single command", () => {
-    const out = sequence([unit("cd app"), unit("npm test")], [], {}, {
-      ...ctx,
-      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
-    })
+    const out = sequence(
+      [unit("cd app"), unit("npm test")],
+      [],
+      {},
+      {
+        ...ctx,
+        containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      },
+    )
     expect(out.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
-    expect(out.decision).toBe("allow")
+    expect(out.decision).toBe("ask")
+  })
+
+  test("a sequence carrying another program is never reviewable", () => {
+    const out = sequence(
+      [unit("cd app"), { executable: "sh", argv: ["sh", "-c", "cat .env"] }],
+      [],
+      {},
+      {
+        ...ctx,
+        containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      },
+    )
+    expect(out.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    expect(out.reviewable).toBe(false)
   })
 })
-
 
 /**
  * Confinement is evidence about *reach* — the sandbox constrains writes and network — but the
@@ -343,5 +380,262 @@ describe("a sensitive argument is never settled by containment", () => {
       confined,
     )
     expect(out.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+})
+
+/**
+ * Two families the scan used to leave to containment.
+ *
+ * A system package manager reaches outside the machine for code exactly like a language one does;
+ * only the name differs. And a command that steers the host — process control, service and login
+ * item registration, disk and network settings — or that hands work to a privileged daemon or a
+ * remote host is not bounded by the sandbox at all: the sandbox confines the CLI process, not the
+ * daemon it talks to or the machine at the other end. Neither family is a judgement call, so
+ * neither reaches a reviewer.
+ */
+const confined: SecurityDecisionAdapter.Context = {
+  ...ctx,
+  containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+}
+
+const single = (command: string, context: SecurityDecisionAdapter.Context = confined) => {
+  const argv = command.split(/\s+/)
+  return SecurityDecisionAdapter.evaluate(
+    {
+      permission: "bash",
+      patterns: [command],
+      metadata: {
+        securityFacts: { complete: true, composed: false, executable: argv[0], argv, effects: [], classified: false },
+      },
+      sessionID,
+    },
+    context,
+  )
+}
+
+describe("system package managers are the same dependency boundary", () => {
+  test.each([
+    ["brew install jq"],
+    ["brew upgrade"],
+    ["apt install curl"],
+    ["apt-get install curl"],
+    ["yum install curl"],
+    ["dnf install curl"],
+    ["zypper install curl"],
+    ["apk add curl"],
+    ["pacman -S curl"],
+    ["port install curl"],
+    ["snap install curl"],
+    ["choco install curl"],
+    ["scoop install curl"],
+    ["nix-env -i curl"],
+    ["pipenv install requests"],
+    ["mamba install numpy"],
+  ])("%s is the dependency boundary", (command) => {
+    const out = single(command)
+    expect({ command, rule: out.rule_id, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.DEPENDENCY_INSTALL",
+      reviewable: false,
+    })
+  })
+
+  test.each([["brew list"], ["dnf search curl"]])("%s is not an install", (command) =>
+    expect(single(command).rule_id).not.toBe("SEC.V1.DEPENDENCY_INSTALL"),
+  )
+})
+
+describe("host control and delegated execution are never contained", () => {
+  test.each([
+    ["kill 1234"],
+    ["killall Finder"],
+    ["pkill node"],
+    ["renice 10 1234"],
+    ["shutdown -h now"],
+    ["reboot"],
+    ["launchctl load x.plist"],
+    ["systemctl restart nginx"],
+    ["service nginx restart"],
+    ["crontab -l"],
+    ["at now"],
+    ["defaults write com.apple.x y"],
+    ["mount /dev/disk1 /mnt"],
+    ["umount /mnt"],
+    ["diskutil eraseDisk"],
+    ["dscl . -list /Users"],
+    ["networksetup -setdnsservers Wi-Fi 1.1.1.1"],
+    ["scutil --set HostName x"],
+    ["pmset sleepnow"],
+    ["nvram boot-args=x"],
+    ["sysctl -w kern.maxfiles=1"],
+    ["csrutil disable"],
+    ["spctl --master-disable"],
+    ["sudo rm -rf /tmp/x"],
+    ["doas whoami"],
+  ])("%s is host control", (command) => {
+    const out = single(command)
+    expect({ command, rule: out.rule_id, decision: out.decision, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.HOST_CONTROL",
+      decision: "ask",
+      reviewable: false,
+    })
+    expect(out.review).toBeUndefined()
+  })
+
+  test.each([
+    ["docker run -v /:/host alpine cat /host/etc/passwd"],
+    ["docker ps"],
+    ["docker exec -it c sh"],
+    ["docker cp c:/etc/passwd ."],
+    ["podman run alpine"],
+    ["nerdctl run alpine"],
+    ["kubectl exec pod -- sh"],
+    ["kubectl get pods"],
+    ["helm install release chart"],
+    ["ssh host uptime"],
+    ["scp file host:/tmp"],
+    ["sftp host"],
+    ["rsync -a . host:/tmp"],
+    ["systemd-run --scope sleep 1"],
+    ["machinectl shell x"],
+    ["nsenter -t 1 -m"],
+    ["dbus-send --system /x"],
+    ["gdbus call --system"],
+    ["colima start"],
+    ["limactl start"],
+  ])("%s delegates outside the sandbox", (command) => {
+    const out = single(command)
+    expect({ command, rule: out.rule_id, decision: out.decision, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.HOST_CONTROL",
+      decision: "ask",
+      reviewable: false,
+    })
+  })
+
+  /** Found by an adversarial sweep of the container, launcher and IPC families. */
+  test.each([
+    ["docker-compose up -d"],
+    ["osascript -e x"],
+    ["socat - UNIX-CONNECT:/var/run/docker.sock"],
+    ["nc -U /var/run/docker.sock"],
+    ["ncat -U /tmp/s"],
+    ["telnet host 25"],
+    ["open -a Terminal"],
+    ["open ."],
+    ["xdg-open ."],
+    ["pbpaste"],
+    ["pbcopy"],
+    ["chflags nohidden ."],
+    ["tmux new-session -d"],
+    ["screen -dmS x"],
+  ])("%s is host control too", (command) => {
+    const out = single(command)
+    expect({ command, rule: out.rule_id, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.HOST_CONTROL",
+      reviewable: false,
+    })
+  })
+
+  test("a wrapper that runs a named child is never reviewable", () => {
+    const out = single("caffeinate -i npm test")
+    expect(out.reviewable).toBe(false)
+  })
+
+  test("a deterministic path rule still outranks host control", () => {
+    const out = SecurityDecisionAdapter.evaluate(
+      {
+        permission: "bash",
+        patterns: ["kill 1 > .git/hooks/pre-commit"],
+        metadata: {
+          securityFacts: {
+            complete: true,
+            composed: false,
+            executable: "kill",
+            argv: ["kill", "1"],
+            effects: [{ operation: "update", path: "/w/.git/hooks/pre-commit" }],
+            classified: false,
+          },
+        },
+        sessionID,
+      },
+      ctx,
+    )
+    expect(out.rule_id).toBe("SEC.V1.GIT_HOOK_WRITE")
+    expect(out.decision).toBe("deny")
+  })
+
+  test("host control anywhere in a sequence wins", () => {
+    const out = SecurityDecisionAdapter.evaluate(
+      {
+        permission: "bash",
+        patterns: ["npm test && docker ps"],
+        metadata: {
+          securityFacts: {
+            complete: true,
+            composed: true,
+            decomposable: true,
+            commands: [
+              { executable: "npm", argv: ["npm", "test"], classified: false },
+              { executable: "docker", argv: ["docker", "ps"], classified: false },
+            ],
+            effects: [],
+          },
+        },
+        sessionID,
+      },
+      confined,
+    )
+    expect(out.rule_id).toBe("SEC.V1.HOST_CONTROL")
+  })
+})
+
+/**
+ * A root or device target is a boundary crossing, not a soft ambiguity: nothing a reviewer can see
+ * makes writing a raw device an ordinary development action. And an operand written `key=value` —
+ * `dd of=…`, and the same shape in other tools — names its path in the value, so the classifier has
+ * to look past the key or the target disappears entirely.
+ */
+describe("a device target is never a reviewer's call", () => {
+  test.each([["tee /dev/sda"], ["cp x /dev/sda"], ["dd of=/dev/sda"], ["dd if=/dev/zero of=/dev/sda"]])(
+    "%s asks without a reviewer",
+    (command) => {
+      const out = single(command)
+      expect({ command, decision: out.decision, reviewable: out.reviewable }).toEqual({
+        command,
+        decision: "ask",
+        reviewable: false,
+      })
+      expect(out.rule_id).not.toBe("SEC.V1.CONTAINED_EXEC")
+    },
+  )
+
+  test("an ordinary delete inside the workspace is still a soft ambiguity", () => {
+    const out = SecurityDecisionAdapter.evaluate(
+      {
+        permission: "bash",
+        patterns: ["rm -rf dist"],
+        metadata: {
+          securityFacts: {
+            complete: true,
+            composed: false,
+            executable: "rm",
+            argv: ["rm", "-rf", "dist"],
+            classified: true,
+            effects: [{ operation: "delete", path: "/w/dist" }],
+          },
+        },
+        sessionID,
+      },
+      ctx,
+    )
+    expect(out.rule_id).toBe("SEC.V1.DESTRUCTIVE_FS")
+    expect(out.reviewable).toBe(true)
+  })
+
+  test("a flag that carries a path is still a flag", () => {
+    expect(single("npm test --prefix=/tmp/x").rule_id).toBe("SEC.V1.CONTAINED_EXEC")
   })
 })

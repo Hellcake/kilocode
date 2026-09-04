@@ -132,7 +132,9 @@ describe("bash permission metadata.securityFacts", () => {
       executable: "echo",
       argv: ["echo", "hello"],
       classified: false,
-      commands: [{ executable: "echo", argv: ["echo", "hello"], classified: false }],
+      // kilocode_change - a command that can expose the inherited environment is flagged per unit
+      ambient: false,
+      commands: [{ executable: "echo", argv: ["echo", "hello"], classified: false, ambient: false }],
       effects: [],
     })
   })

@@ -220,11 +220,9 @@ describe("SecurityDecision.decide", () => {
 })
 
 /**
- * Proven confinement is the only evidence the layer has that an unclassified command cannot reach
- * past the workspace. `UNCLASSIFIED_EXEC` is exactly the population that evidence can settle: the
- * parse is complete, no deterministic path rule fired, and the command is simply not one the scan
- * knows. Every other rule keeps absolute priority, and confinement never pierces the XDG floor or a
- * human-only guard.
+ * Operational confinement is useful audit evidence, but the current sandbox is not a complete
+ * capability boundary: reads remain ambient and built-in Kilo roots remain writable. It therefore
+ * cannot settle an unclassified command without a human.
  */
 describe("containment as evidence for an unclassified command", () => {
   const exec: SecurityDecisionTypes.ExecFact = {
@@ -251,11 +249,27 @@ describe("containment as evidence for an unclassified command", () => {
     widened: false,
   } as const
 
-  test("allows an unclassified command inside a proven sandbox with no network", () => {
+  test("keeps a contained unclassified command at an ask, reviewable per invocation", () => {
     const out = SecurityDecision.decide(input({ action: action(), containment: contained }))
-    expect(out.decision).toBe("allow")
+    expect(out.decision).toBe("ask")
     expect(out.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
     expect(out.requirements).toEqual(["sandbox", "restricted_network"])
+    // `npm test` names no program the scan cannot see, so this one invocation earns eligibility.
+    // The class does not: a carrier stays non-reviewable — see reviewer-eligibility.test.ts.
+    expect(out.reviewable).toBe(true)
+  })
+
+  test("a contained command that carries another program is never reviewable", () => {
+    const out = SecurityDecision.decide(
+      input({
+        action: {
+          ...action(),
+          exec: { ...exec, executable: "sh", argv: ["sh", "-c", "cat .env"] },
+        },
+        containment: contained,
+      }),
+    )
+    expect(out.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
     expect(out.reviewable).toBe(false)
   })
 
@@ -273,11 +287,15 @@ describe("containment as evidence for an unclassified command", () => {
     expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
   })
 
-  test("allows through a proxy only when the destinations are exact", () => {
+  test("keeps an exactly bounded proxy at a non-reviewable contained ask", () => {
     const bounded = SecurityDecision.decide(
-      input({ action: action(), containment: { ...contained, network: "proxy", destinations: ["registry.npmjs.org"] } }),
+      input({
+        action: action(),
+        containment: { ...contained, network: "proxy", destinations: ["registry.npmjs.org"] },
+      }),
     )
     expect(bounded.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    expect(bounded.decision).toBe("ask")
     const unbounded = SecurityDecision.decide(
       input({ action: action(), containment: { ...contained, network: "proxy" } }),
     )
