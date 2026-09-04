@@ -384,6 +384,69 @@ describe("a sensitive argument is never settled by containment", () => {
 })
 
 /**
+ * Label syntax is not a filesystem path.
+ *
+ * `//...` is how Bazel and its relatives spell "everything under the workspace root", not the root
+ * of the machine — the build tool resolves a label against the workspace, never against `/`. Only
+ * these executables get that reading, and the package the label names is still classified: a label
+ * is re-anchored to the workspace, never waved through.
+ */
+describe("build labels are workspace-relative, not absolute paths", () => {
+  const confined: SecurityDecisionAdapter.Context = {
+    ...ctx,
+    containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+  }
+
+  const run = (command: string) => {
+    const argv = command.split(/\s+/)
+    return SecurityDecisionAdapter.evaluate(
+      {
+        permission: "bash",
+        patterns: [command],
+        metadata: {
+          securityFacts: { complete: true, composed: false, executable: argv[0], argv, effects: [], classified: false },
+        },
+        sessionID,
+      },
+      confined,
+    )
+  }
+
+  test.each([
+    ["bazel build //..."],
+    ["bazel build //src:lib"],
+    ["bazel test //src/app:all"],
+    ["bazelisk build //..."],
+    ["buck2 build //src:lib"],
+    ["pants test //src/python:tests"],
+  ])("%s does not cross the workspace boundary", (command) => {
+    const out = run(command)
+    expect({ command, rule: out.rule_id }).toEqual({ command, rule: "SEC.V1.CONTAINED_EXEC" })
+  })
+
+  test("a repository-qualified label is still a label", () => {
+    expect(run("bazel build @com_example//src:lib").rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+  })
+
+  test("a label is re-anchored to the workspace, not waved through", () => {
+    // `//` means the workspace root, so the package it names is classified from there.
+    expect(run("bazel build //.ssh/id_rsa:x").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(run("bazel build //.env").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+
+  test("an ordinary path argument still crosses the boundary", () => {
+    expect(run("bazel build ..").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(run("bazel build /outside").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(run("bazel build ../sibling").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+
+  test("label syntax is not read into any other executable", () => {
+    expect(run("xxd //etc/passwd").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(run("cat //outside").rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+})
+
+/**
  * Two families the scan used to leave to containment.
  *
  * A system package manager reaches outside the machine for code exactly like a language one does;
