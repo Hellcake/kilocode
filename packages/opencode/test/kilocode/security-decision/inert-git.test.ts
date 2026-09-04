@@ -338,3 +338,44 @@ describe("content-printing git is never a reviewer's to narrow", () => {
     },
   )
 })
+
+/**
+ * Read-only git that reports counts and names, and nothing else.
+ *
+ * Each of these is admitted by verb *and* arguments, like the verbs already on the list. `remote -v`
+ * stays out: a repository cloned with an embedded token prints it in the URL. `diff`, `show` and
+ * `blame` stay out for the reason this whole file exists — they print file contents.
+ */
+describe("counting and naming git verbs pass", () => {
+  test.each([
+    ["git stash list"],
+    ["git stash list --oneline"],
+    ["git describe"],
+    ["git describe --tags"],
+    ["git describe --tags --always"],
+    ["git rev-list --count HEAD"],
+    ["git rev-list -n 5 HEAD"],
+    ["git tag -l"],
+    ["git tag --list"],
+    ["git shortlog -sn"],
+    ["git count-objects -v"],
+    ["git --no-pager tag -l"],
+  ])("%s passes", (command) => passes(command))
+
+  test.each([
+    ["git stash"],
+    ["git stash pop"],
+    ["git stash drop"],
+    ["git stash show -p"],
+    ["git tag v1"],
+    ["git tag -d v1"],
+    ["git remote -v"],
+    ["git remote"],
+    ["git describe --dirty=--broken --exec"],
+    ["git rev-list --header HEAD"],
+  ])("%s does not", (command) => {
+    const out = shell(command)
+    expect({ command, decision: out.decision }).toEqual({ command, decision: "ask" })
+    expect(out.rule_id).not.toBe("SEC.V1.NO_OPINION")
+  })
+})

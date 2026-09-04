@@ -145,13 +145,40 @@ export namespace SecurityDecisionAdapter {
     }
   }
 
+  /** Files whose whole content is a long-lived credential. Matched by name, never by heuristic. */
+  const CREDENTIALS = new Set([
+    ".dockercfg",
+    ".git-credentials",
+    ".htpasswd",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".terraformrc",
+    "credentials",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "secrets.yaml",
+    "secrets.yml",
+    "service-account.json",
+  ])
+
+  /** Key and certificate stores, by extension. */
+  const KEYSTORES = [".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"]
+
   function pathClass(target: string): T.PathClass {
     const base = path.posix.basename(target)
     if (/(^|\/)\.git\/hooks\//.test(target)) return "git_hook"
     // Control plane: hook redirection, filter drivers and direnv all install code that later runs.
+    // `.husky` and `.githooks` are where `core.hooksPath` points in a modern repository: a write
+    // there installs a hook just as a write to `.git/hooks` does. They ask rather than deny, because
+    // unlike `.git/hooks` these files are committed and edited by hand.
     if (
       /(^|\/)\.git\/config$/.test(target) ||
       /(^|\/)\.git\/info\/attributes$/.test(target) ||
+      /(^|\/)\.husky\//.test(target) ||
+      /(^|\/)\.githooks\//.test(target) ||
       base === ".gitattributes" ||
       base === ".envrc"
     )
@@ -162,12 +189,13 @@ export namespace SecurityDecisionAdapter {
     if (
       base === ".env" ||
       base.startsWith(".env.") ||
+      CREDENTIALS.has(base) ||
+      KEYSTORES.some((extension) => base.endsWith(extension)) ||
       /(^|\/)\.ssh\//.test(target) ||
       /(^|\/)\.aws\//.test(target) ||
-      base.endsWith(".pem") ||
-      base.endsWith(".key") ||
-      base === "credentials" ||
-      base === ".netrc"
+      /(^|\/)\.kube\//.test(target) ||
+      /(^|\/)\.docker\//.test(target) ||
+      /(^|\/)\.gnupg\//.test(target)
     )
       return "sensitive"
     return "ordinary"

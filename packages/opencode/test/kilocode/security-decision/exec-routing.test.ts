@@ -485,7 +485,7 @@ describe("host control and delegated execution are never contained", () => {
 
   test.each([
     ["docker run -v /:/host alpine cat /host/etc/passwd"],
-    ["docker ps"],
+    ["docker top app"],
     ["docker exec -it c sh"],
     ["docker cp c:/etc/passwd ."],
     ["podman run alpine"],
@@ -571,7 +571,7 @@ describe("host control and delegated execution are never contained", () => {
     const out = SecurityDecisionAdapter.evaluate(
       {
         permission: "bash",
-        patterns: ["npm test && docker ps"],
+        patterns: ["npm test && docker logs app"],
         metadata: {
           securityFacts: {
             complete: true,
@@ -579,7 +579,7 @@ describe("host control and delegated execution are never contained", () => {
             decomposable: true,
             commands: [
               { executable: "npm", argv: ["npm", "test"], classified: false },
-              { executable: "docker", argv: ["docker", "ps"], classified: false },
+              { executable: "docker", argv: ["docker", "logs", "app"], classified: false },
             ],
             effects: [],
           },
@@ -637,5 +637,82 @@ describe("a device target is never a reviewer's call", () => {
 
   test("a flag that carries a path is still a flag", () => {
     expect(single("npm test --prefix=/tmp/x").rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+  })
+})
+
+/**
+ * The narrow read-only forms of a delegating tool, and the last few commands that report machine
+ * state without reading a file.
+ *
+ * Docker is admitted the way git is: by verb *and* arguments, with every global flag refused —
+ * `-H` and `--context` point the client at another daemon, which is the same redirection
+ * `--git-dir` performs. The forms that print a container's environment or its logs stay out: those
+ * are where a secret actually surfaces.
+ */
+describe("read-only docker forms pass", () => {
+  test.each([
+    ["docker ps"],
+    ["docker ps -a"],
+    ["docker ps -q"],
+    ["docker ps --filter status=running"],
+    ["docker images"],
+    ["docker version"],
+    ["docker compose ps"],
+  ])("%s passes", (command) => {
+    const out = single(command)
+    expect({ command, rule: out.rule_id, decision: out.decision }).toEqual({
+      command,
+      rule: "SEC.V1.NO_OPINION",
+      decision: "pass",
+    })
+  })
+
+  test.each([
+    ["docker logs app"],
+    ["docker inspect app"],
+    ["docker info"],
+    ["docker ps --no-trunc"],
+    ["docker ps --format {{.Command}}"],
+    ["docker -H tcp://evil ps"],
+    ["docker --context evil ps"],
+    ["docker run alpine"],
+    ["docker exec -it c sh"],
+    ["docker compose up"],
+    ["docker compose logs"],
+  ])("%s is still host control", (command) => {
+    const out = single(command)
+    expect({ command, rule: out.rule_id, reviewable: out.reviewable }).toEqual({
+      command,
+      rule: "SEC.V1.HOST_CONTROL",
+      reviewable: false,
+    })
+  })
+})
+
+describe("machine state without reading a file", () => {
+  test.each([["tree"], ["tree src"], ["df"], ["df -h"], ["uname -a"]])("%s passes", (command) => {
+    expect(single(command).rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test.each([
+    ["node --version"],
+    ["npm --version"],
+    ["python3 --version"],
+    ["cargo --version"],
+    ["go version"],
+    ["tsc --version"],
+  ])("%s passes as a version check", (command) => {
+    expect(single(command).rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test.each([
+    ["node --version extra"],
+    ["node -e 1"],
+    ["python3 -c print(1)"],
+    ["rg password"],
+    ["grep -r secret ."],
+    ["jq . .env"],
+  ])("%s does not", (command) => {
+    expect(single(command).rule_id).not.toBe("SEC.V1.NO_OPINION")
   })
 })
