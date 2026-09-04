@@ -20,6 +20,7 @@ import { ReadPermission } from "@/kilocode/permission/read"
 import { AgentManagerPermission } from "@/kilocode/permission/agent-manager" // kilocode_change
 import { ExternalDirectoryPermission } from "@/kilocode/permission/external-directory"
 import { KiloSecurityGate } from "@/kilocode/security-decision/gate"
+import { PermissionHumanOnly } from "@/kilocode/permission/human-only" // kilocode_change
 import { SecurityBlocked } from "@/kilocode/security-decision/block"
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import { SecurityAsk } from "@/kilocode/security-decision/ask"
@@ -440,9 +441,7 @@ const layer = Layer.effect(
       // Log rather than fail silently: a genuine human client sets `interactive`, so a refused reply here
       // means an auto-approver tried to answer — the request intentionally stays pending for a human.
       if (
-        (existing.info.metadata?.["skillShell"] === true ||
-          existing.info.metadata?.["sandboxEscalation"] === true ||
-          SecurityAsk.is(existing.info.metadata)) && // kilocode_change - a security-raised ask is never machine-approved
+        PermissionHumanOnly.requires(existing.info.metadata) && // kilocode_change - one predicate, shared with the clients
         input.reply !== "reject" &&
         input.interactive !== true
       ) {
