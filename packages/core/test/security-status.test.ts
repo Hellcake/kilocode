@@ -27,12 +27,32 @@ describe("SecurityStatus.from", () => {
     expect(out?.kind).toBe("reviewing")
   })
 
-  test("a reviewer verdict of allow is an auto-approval", () => {
+  test("a reviewer verdict of allow that let the call run is an auto-approval", () => {
     const out = SecurityStatus.from(
-      record({ state: "allow", reason_code: "ORDINARY_DEV_COMMAND", latency_ms: 42 }, { final_enforcement: "allow" }),
+      record(
+        { state: "allow", reason_code: "ORDINARY_DEV_COMMAND", latency_ms: 42 },
+        { final_enforcement: "allow", enforcement_source: "security" },
+      ),
     )
 
     expect(out?.kind).toBe("auto-approved")
+  })
+
+  // Two independent levels: the reviewer stepping aside does not mean the call may proceed. An
+  // ordinary Kilo rule can still require a human, and then the badge must not read "auto-approved"
+  // next to an open permission dialog.
+  test("a reviewer allow that still needs a human reads as needing approval", () => {
+    const out = SecurityStatus.from(record({ state: "allow", reason_code: "OK" }, { final_enforcement: "ask_pending" }))
+
+    expect(out?.kind).toBe("needs-approval")
+  })
+
+  test("a call the human approved is not reported as auto-approved", () => {
+    const out = SecurityStatus.from(
+      record({ state: "allow" }, { final_enforcement: "allow", enforcement_source: "manual" }),
+    )
+
+    expect(out).toBeUndefined()
   })
 
   test.each([["keep_ask"], ["timeout"], ["error"], ["not_run"]])(
@@ -88,7 +108,16 @@ describe("SecurityStatus.from", () => {
     expect(SecurityStatus.from({ approval: { source: "agent" } })).toBeUndefined()
   })
 
-  test("an unrecognized reviewer state is not invented into a state", () => {
-    expect(SecurityStatus.from(record({ state: "wat" }, { final_enforcement: "ask_pending" }))).toBeUndefined()
+  test("an open ask needs a human whatever the reviewer said", () => {
+    // The state comes from what happened to the call, so an unreadable verdict cannot hide the fact
+    // that a prompt is waiting.
+    expect(SecurityStatus.from(record({ state: "wat" }, { final_enforcement: "ask_pending" }))?.kind).toBe(
+      "needs-approval",
+    )
+  })
+
+  test("a record with no enforcement to read reports nothing", () => {
+    expect(SecurityStatus.from(record({ state: "wat" }))).toBeUndefined()
+    expect(SecurityStatus.from(record({ state: "keep_ask" }))).toBeUndefined()
   })
 })

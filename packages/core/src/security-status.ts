@@ -31,13 +31,11 @@ export namespace SecurityStatus {
     decision?: unknown
     reviewer?: { state?: unknown; reason_code?: unknown; latency_ms?: unknown }
     final_enforcement?: unknown
+    enforcement_source?: unknown
   }
 
   /** A call that did not proceed, however it was stopped. */
   const STOPPED = new Set(["deny", "blocked", "reject"])
-
-  /** A verdict that leaves the call waiting on a human. */
-  const PENDING = new Set(["keep_ask", "timeout", "error", "not_run"])
 
   function record(metadata: Record<string, unknown> | undefined): Record_ | undefined {
     const value = metadata?.[KEY]
@@ -66,11 +64,20 @@ export namespace SecurityStatus {
       ...(text(value.reviewer?.reason_code) ? { reason_code: text(value.reviewer?.reason_code) } : {}),
       ...(typeof value.reviewer?.latency_ms === "number" ? { latency_ms: value.reviewer.latency_ms } : {}),
     }
-    // Enforcement outranks the verdict: what happened to the call is what the user acted on.
+    // Enforcement outranks the verdict, in both directions. The reviewer and the ordinary permission
+    // pipeline are separate levels: a reviewer that steps aside has not decided the call may run,
+    // because a rule of Kilo's own can still require a human. Reading the verdict first is what puts
+    // an "auto-approved" badge next to an open permission dialog.
     if (value.decision === "deny" || (enforcement && STOPPED.has(enforcement))) return { kind: "blocked", ...detail }
+    if (enforcement === "ask_pending") {
+      if (state === "running") return { kind: "reviewing", ...detail }
+      return { kind: "needs-approval", ...detail }
+    }
+    // A human answering the prompt is an ordinary approval, already explained by the approval note
+    // beside it; claiming the reviewer earned it would take credit for a decision it did not make.
+    if (enforcement === "allow" && state === "allow" && value.enforcement_source !== "manual")
+      return { kind: "auto-approved", ...detail }
     if (state === "running") return { kind: "reviewing", ...detail }
-    if (state === "allow") return { kind: "auto-approved", ...detail }
-    if (state && PENDING.has(state) && enforcement === "ask_pending") return { kind: "needs-approval", ...detail }
     return undefined
   }
 }

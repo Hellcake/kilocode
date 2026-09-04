@@ -7,6 +7,7 @@ import * as Config from "@/config/config"
 import { SessionID } from "@/session/schema"
 import { SecurityBlocked } from "@/kilocode/security-decision/block"
 import { SecurityAsk } from "@/kilocode/security-decision/ask"
+import { SecurityReviewer } from "@/kilocode/security-decision/reviewer"
 import type { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import { testEffect } from "../../lib/effect"
 
@@ -24,6 +25,7 @@ const previous = process.env["KILO_SECURITY_DECISION"]
 afterEach(() => {
   if (previous === undefined) delete process.env["KILO_SECURITY_DECISION"]
   else process.env["KILO_SECURITY_DECISION"] = previous
+  SecurityReviewer.reset()
 })
 
 const sessionID = SessionID.make("ses_security_layer")
@@ -215,6 +217,61 @@ it.instance("keeps a contained unclassified command pending for a human", () =>
     expect(outcome.security?.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
     expect(outcome.security?.final_enforcement).toBe("allow")
     expect(outcome.security?.requirements).toEqual(["sandbox", "restricted_network"])
+  }),
+)
+
+/**
+ * The autonomy the benchmark measures has to be the autonomy the pipeline delivers.
+ *
+ * A reviewer can only give back what this layer itself took away: with a baseline of `allow` — auto
+ * mode — a contained, benign command that the reviewer clears must reach the tool without a prompt.
+ * It is never an override of the user's own policy: the companion test below starts from a baseline
+ * of `ask` and the same verdict leaves the prompt standing.
+ */
+it.instance("returns a contained command to the auto path when the reviewer clears it", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    SecurityReviewer.bind(() => Promise.resolve('{"decision":"allow","reason_code":"ORDINARY_DEV_COMMAND"}'))
+    const permission = yield* Permission.Service
+
+    const outcome = yield* ask({
+      ...npmTest,
+      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+    })
+
+    // No prompt was ever published, and the call carries the reviewer's verdict as its reason.
+    expect(yield* permission.list()).toEqual([])
+    expect(outcome.manual).toBe(false)
+    expect(outcome.security?.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    expect(outcome.security?.final_enforcement).toBe("allow")
+    expect(outcome.security?.reviewer).toMatchObject({ state: "allow", reason_code: "ORDINARY_DEV_COMMAND" })
+  }),
+)
+
+it.instance("does not let the reviewer overrule the user's own ask policy", () =>
+  Effect.gen(function* () {
+    process.env["KILO_SECURITY_DECISION"] = "1"
+    SecurityReviewer.bind(() => Promise.resolve('{"decision":"allow","reason_code":"ORDINARY_DEV_COMMAND"}'))
+    const permission = yield* Permission.Service
+
+    const fiber = yield* ask({
+      ...npmTest,
+      ruleset: [{ permission: "bash", pattern: "*", action: "ask" as const }],
+      containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+    }).pipe(Effect.forkScoped)
+
+    const pending = yield* Effect.gen(function* () {
+      while (true) {
+        const list = yield* permission.list()
+        if (list.length === 1) return list
+        yield* Effect.sleep("10 millis")
+      }
+    }).pipe(Effect.timeoutOrElse({ duration: "2 seconds", orElse: () => Effect.fail(new Error("timed out")) }))
+
+    yield* permission.reply({ requestID: pending[0]!.id, reply: "once", interactive: true })
+    const outcome = yield* Fiber.join(fiber)
+    expect(outcome.manual).toBe(true)
+    expect(outcome.security?.enforcement_source).toBe("manual")
   }),
 )
 
