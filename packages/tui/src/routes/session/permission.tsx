@@ -516,6 +516,7 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
                     requestID: props.request.id,
                     directory: props.directory,
                     workspace: project.workspace.current(),
+                    interactive: true, // kilocode_change - a human pressed reject here too
                   })
                   return
                 }
