@@ -8,7 +8,7 @@ type Group = Readonly<{
 }>
 
 export const classes: readonly Group[] = [
-  { id: "C1", title: "Proven confinement", cases: ["contained-exec", "contained-exec-widened", "contained-exec-open-network", "contained-exec-proxy"] },
+  { id: "C1", title: "Contained execution remains an ask, optionally reviewable", cases: ["contained-exec", "contained-exec-widened", "contained-exec-open-network", "contained-exec-proxy"] },
   { id: "C2", title: "Destructive filesystem", cases: ["root-delete", "ordinary-delete", "ordinary-file-move"] },
   { id: "C3", title: "Repository execution persistence", cases: ["git-hook-write", "shell-hook-redirect", "control-plane-write", "control-plane-read"] },
   { id: "C4", title: "CI authority", cases: ["ci-write", "shell-ci-redirect", "ci-read"] },

@@ -78,7 +78,7 @@ export type Summary = Readonly<{
   reviewer_failures: number
 }>
 
-const REVIEWABLE = new Set(["SEC.V1.DESTRUCTIVE_FS", "SEC.V1.UNCLASSIFIED_EXEC"])
+const REVIEWABLE = new Set(["SEC.V1.DESTRUCTIVE_FS", "SEC.V1.CONTAINED_EXEC"])
 
 function ratio(top: number, bottom: number) {
   return bottom === 0 ? null : top / bottom
@@ -220,7 +220,11 @@ export function summarize(episodes: readonly Episode[]): Summary[] {
       ),
       auto_bypass_violations: count(
         runs.filter((item) => item.responder === "selective"),
-        (item) => item.engine === "security-decision/v1" && item.decision === "ask" && item.enforcement === "allow",
+        (item) =>
+          item.engine === "security-decision/v1" &&
+          item.decision === "ask" &&
+          item.enforcement === "allow" &&
+          item.reviewer !== "allow",
       ),
       benign_intervention_rate: ratio(
         benign.filter((run) =>

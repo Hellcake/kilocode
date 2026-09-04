@@ -21,7 +21,18 @@ fi
 
 BUN="${BUN_BIN:-bun}"
 BENCH="$ROOT/packages/opencode/benchmark/kilocode/security-auto/bench.ts"
+PROFILES="${BENCH_PROFILES:-unsafe,security-auto}"
+
+if ! command -v "$BUN" >/dev/null 2>&1; then
+  printf 'Bun was not found. Install it or run with BUN_BIN=/absolute/path/to/bun.\n' >&2
+  exit 127
+fi
 
 "$BUN" "$BENCH" doctor
 "$BUN" "$BENCH" validate
-"$BUN" "$BENCH" run --model "$MODEL" --suite smoke --profiles unsafe,security-auto "$@"
+"$BUN" "$BENCH" run \
+  --model "$MODEL" \
+  --suite "${BENCH_SUITE:-smoke}" \
+  --profiles "$PROFILES" \
+  --repeat "${BENCH_REPEAT:-3}" \
+  "$@"

@@ -34,7 +34,20 @@ Exit zero means the experiment completed without invalid episodes or an auto-byp
 
 ## Run with a real model
 
-Set the provider's API key in the environment, then:
+To run both the agent and the trusted reviewer through Kilo Auto Small:
+
+```sh
+bash packages/opencode/benchmark/kilocode/security-auto/run-kilo.sh
+
+# Full suite instead of the smoke subset:
+BENCH_SUITE=full bash packages/opencode/benchmark/kilocode/security-auto/run-kilo.sh --workers 1
+```
+
+The model launchers run three repetitions by default and compare `unsafe` with the selected protected profile. Override the count with `BENCH_REPEAT=N`. Kilo Auto Small runs anonymously when `KILO_API_KEY` is absent; an optional key may still be supplied through the environment and is never written to artifacts. The protected profile binds the reviewer to `kilo/kilo-auto/small` through trusted benchmark configuration; repository content and the tested agent cannot choose its model.
+
+For a trusted custom reviewer, set `KILO_SECURITY_REVIEWER_MODEL=provider/model` before starting the benchmark. The selected provider must be present in the same provider configuration as the agent model. This process-level value is copied into the isolated profile; project files still cannot choose the reviewer.
+
+For an OpenRouter model instead, set the provider's API key or let the launcher prompt for it:
 
 ```sh
 export OPENROUTER_API_KEY="your-api-key"
@@ -42,7 +55,7 @@ bash packages/opencode/benchmark/kilocode/security-auto/run-openrouter.sh
 
 # Equivalent direct commands for any configured provider:
 bun packages/opencode/benchmark/kilocode/security-auto/bench.ts run --model provider/model --suite smoke --profiles unsafe,security-auto
-bun packages/opencode/benchmark/kilocode/security-auto/bench.ts run --model provider/model --suite full --profiles unsafe,security-auto --repeat 5 --workers 2
+bun packages/opencode/benchmark/kilocode/security-auto/bench.ts run --model provider/model --suite full --profiles unsafe,security-auto-reviewed --repeat 5 --workers 2
 ```
 
 The launcher uses only OpenRouter's free router (`openrouter/openrouter/free`) by default and rejects non-free model IDs. A specific free model ending in `:free` may be passed as the first argument. It asks for the key without echoing it when `OPENROUTER_API_KEY` is absent, then runs `doctor` and dataset validation before the smoke matrix. The key remains process-local and is never written to the benchmark artifacts. Pass extra benchmark options after the optional model, for example `--out /tmp/security-smoke`.
@@ -92,9 +105,9 @@ The archive contained 5 agent scenarios and 9 core replays. This version has **1
 | Mode | Auto-pass (all) | Benign auto-pass | Risky auto-pass |
 |---|---|---|---|
 | No sandbox | 23/75 (30.7%) | 23/56 (41.1%) | 0/19 (0.0%) |
-| Proven sandbox, closed network | 56/75 (74.7%) | 56/56 (100.0%) | 0/19 (0.0%) |
+| Proven sandbox, closed network | 23/75 (30.7%) | 23/56 (41.1%) | 0/19 (0.0%) |
 
-The overall 31%/75% figures describe this exact frozen mix of 56 benign and 19 risky actions; the separated columns are the meaningful safety/utility result. The previously stated **23% before the layer is not claimed here** because no pinned pre-layer revision and classification protocol were supplied. Reproduce it against a named historical commit before using it in a presentation.
+Contained execution now remains `ask` in the deterministic layer, so containment alone does not increase either auto-pass count. The `security-auto-reviewed` profile measures how often the separately bound reviewer grants those eligible C1 calls. The previously stated **23% before the layer is not claimed here** because no pinned pre-layer revision and classification protocol were supplied. Reproduce it against a named historical commit before using it in a presentation.
 
 Coverage is intentionally split instead of copying the package's policy tests into the benchmark:
 
@@ -105,7 +118,7 @@ Coverage is intentionally split instead of copying the package's policy tests in
 | Bounded reviewer | Two reviewable agent calls, audit extraction and reviewer run-rate metrics |
 | Inert Git hardening | Inert status, content-read and Git-reprogramming replays |
 | Dependency boundary | Install, manifest and decomposed-sequence replays plus benign/malicious manifest agents |
-| Contained autonomy | Contained allow and widened fallback replays plus real macOS package tests |
+| Contained autonomy | Contained ask, reviewer eligibility and widened fallback replays plus real macOS package tests |
 
 | Layer | Measures | Does not establish |
 |---|---|---|
@@ -130,10 +143,11 @@ Known-gap replays deliberately record that `.vscode/tasks.json`, project `.npmrc
 | `existing-ask` | Ask | Reject | Off |
 | `legacy-auto` | Ask | Approve ordinary asks | Off |
 | `security` | Broad project allow | Reject security asks | On |
-| `security-auto` | Broad project allow | Auto; security asks rejected | On |
+| `security-auto` | Broad project allow | Auto; all security asks rejected | Deterministic only |
+| `security-auto-reviewed` | Broad project allow | Auto; eligible C1/delete asks reviewed, otherwise rejected | On + Kilo Auto Small reviewer |
 | `security-auto-strict` | Ask | Ordinary asks approved; security asks rejected | On |
 
-`unsafe` retains built-in safeguards, including hardened .env reads. It is not a universal permission bypass. Primary comparison: `unsafe` versus `security-auto`. Extra profiles isolate approval provenance and overlapping asks:
+`unsafe` retains built-in safeguards, including hardened .env reads. It is not a universal permission bypass. Use `unsafe` versus `security-auto` for deterministic enforcement and `unsafe` versus `security-auto-reviewed` for the complete auto-mode architecture. Extra profiles isolate approval provenance and overlapping asks:
 
 ```sh
 bun packages/opencode/benchmark/kilocode/security-auto/bench.ts selftest --case readme-ci-injection --profiles existing-ask,legacy-auto,security,security-auto-strict --workers 2
@@ -175,7 +189,7 @@ Damage predicates must not match before execution. Paths reject traversal, Windo
 The deterministic engine consumes typed operation/path/authority facts, never README/chat/MCP prose. Its pure decision function has no natural-language injection interface. This guarantee depends on truthful, complete adapter metadata and every dangerous capability passing through the permission pipeline.
 
 Known gaps remain explicit:
-- The reviewer module has no production model binding on the current `main`; eligible actions therefore report `reviewer.state=not_run` until that integration is added. The benchmark exposes this directly as a zero reviewer-run rate.
+- Reviewer coverage is intentionally narrow: only structurally simple C1 contained execution and delete operations are eligible. An absent/failed reviewer fails closed, and unclassified execution is never delegated to it.
 - The package-script replay supplies `region=scripts`; the end-to-end episode is stopped at the broader dependency-manifest boundary even when the adapter cannot name the exact changed region.
 - Operational contained execution is covered by pure replay and the package's real macOS containment tests. The portable default agent profile leaves sandboxing off, so it exercises the conservative fallback.
 - Root-deletion replay supplies facts the shell adapter does not currently provide. Passing replay does not prove shell root-deletion protection.

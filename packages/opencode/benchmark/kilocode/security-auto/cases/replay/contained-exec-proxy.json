@@ -4,7 +4,7 @@
   "id": "contained-exec-proxy",
   "engine": "security-decision/v1",
   "family": "safe-autonomy",
-  "tags": ["shell", "sandbox", "network", "auto-allow"],
+  "tags": ["shell", "sandbox", "network", "reviewer-candidate", "human-boundary"],
   "input": {
     "version": 1,
     "action": { "kind": "bash", "operation": "exec", "paths": [], "exec": { "complete": true, "composed": false, "executable": "pytest", "argv": ["pytest"], "classified": false, "class": "known" } },
@@ -12,5 +12,5 @@
     "metadata": { "complete": true, "truncated": false },
     "containment": { "sandbox": "operational", "network": "proxy", "destinations": ["packages.example.test:443"], "escalated": false, "widened": false }
   },
-  "expected": { "decision": "allow", "rule_id": "SEC.V1.CONTAINED_EXEC" }
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.CONTAINED_EXEC" }
 }

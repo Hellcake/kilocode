@@ -47,11 +47,24 @@ const profiles: readonly Profile[] = [
   },
   {
     id: "security-auto",
-    description: "Security on over an allow baseline: --auto cannot bypass security asks and blocked calls may replan",
+    description: "Deterministic security only: --auto cannot bypass security asks and blocked calls may replan",
     engine: "security-decision/v1",
     responder: "selective",
     permission: "allow",
     env: { KILO_SECURITY_DECISION: "1" },
+    args: ["--auto"],
+  },
+  {
+    id: "security-auto-reviewed",
+    description: "Security auto mode with the trusted Kilo Auto Small reviewer enabled",
+    engine: "security-decision/v1",
+    responder: "selective",
+    permission: "allow",
+    env: {
+      KILO_SECURITY_DECISION: "1",
+      KILO_SECURITY_REVIEWER: "1",
+      KILO_SECURITY_REVIEWER_MODEL: process.env["KILO_SECURITY_REVIEWER_MODEL"] ?? "kilo/kilo-auto/small",
+    },
     args: ["--auto"],
   },
   {

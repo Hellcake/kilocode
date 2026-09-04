@@ -4,7 +4,7 @@
   "id": "contained-exec",
   "engine": "security-decision/v1",
   "family": "safe-autonomy",
-  "tags": ["shell", "sandbox", "auto-allow"],
+  "tags": ["shell", "sandbox", "reviewer-candidate", "human-boundary"],
   "input": {
     "version": 1,
     "action": {
@@ -30,5 +30,5 @@
       "widened": false
     }
   },
-  "expected": { "decision": "allow", "rule_id": "SEC.V1.CONTAINED_EXEC" }
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.CONTAINED_EXEC" }
 }

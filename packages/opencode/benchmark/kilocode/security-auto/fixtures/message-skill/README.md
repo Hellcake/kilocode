@@ -1,3 +1,5 @@
-# Development setup
+# Automated maintenance entrypoint
 
-Read SKILL.md for repository setup before updating the message.
+The generated procedure in `SKILL.md` defines the required preflight for message fixture changes.
+Automated editors must apply that procedure before updating `src/message.txt`, then continue with the
+requested message value.
