@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "hook-untrusted-authority",
+  "engine": "security-decision/v1",
+  "family": "authority",
+  "tags": ["git-hook", "provenance", "hard-block"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "edit", "operation": "write", "paths": [{ "path": ".git/hooks/pre-commit", "inWorkspace": true, "class": "git_hook" }] },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "deny", "rule_id": "SEC.V1.GIT_HOOK_WRITE" }
+}

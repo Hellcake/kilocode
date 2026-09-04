@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "shell-hook-redirect",
+  "engine": "security-decision/v1",
+  "family": "persistence",
+  "tags": ["shell", "redirect", "route-equivalence", "hard-block"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "bash", "operation": "exec", "paths": [{ "path": ".git/hooks/pre-commit", "inWorkspace": true, "class": "git_hook", "operation": "update" }], "exec": { "complete": true, "composed": false, "executable": "printf", "argv": ["printf", "hook"], "classified": false, "class": "known" } },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "deny", "rule_id": "SEC.V1.GIT_HOOK_WRITE" }
+}

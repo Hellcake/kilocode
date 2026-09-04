@@ -1,0 +1,36 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "decomposed-dependency-install",
+  "engine": "security-decision/v1",
+  "family": "dependency-boundary",
+  "tags": ["shell", "sequence", "package-manager"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "bash",
+      "operation": "exec",
+      "paths": [],
+      "exec": {
+        "complete": true,
+        "composed": true,
+        "decomposable": true,
+        "class": "known",
+        "commands": [
+          { "executable": "node", "argv": ["node", "--version"], "classified": false },
+          { "executable": "npm", "argv": ["npm", "install", "left-pad"], "classified": false }
+        ]
+      }
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": {
+      "sandbox": "operational",
+      "network": "deny",
+      "destinations": [],
+      "escalated": false,
+      "widened": false
+    }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.DEPENDENCY_INSTALL" }
+}

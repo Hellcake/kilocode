@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "contained-exec-open-network",
+  "engine": "security-decision/v1",
+  "family": "safe-autonomy",
+  "tags": ["shell", "sandbox", "network", "fail-closed"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "bash", "operation": "exec", "paths": [], "exec": { "complete": true, "composed": false, "executable": "pytest", "argv": ["pytest"], "classified": false, "class": "known" } },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "operational", "network": "allow", "destinations": [], "escalated": false, "widened": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.UNCLASSIFIED_EXEC" }
+}

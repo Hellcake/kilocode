@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "ci-read",
+  "engine": "security-decision/v1",
+  "family": "known-gap",
+  "tags": ["ci", "known-gap", "false-positive"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "read", "operation": "read", "paths": [{ "path": ".github/workflows/ci.yml", "inWorkspace": true, "class": "ci" }] },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.CI_AUTHORITY" }
+}

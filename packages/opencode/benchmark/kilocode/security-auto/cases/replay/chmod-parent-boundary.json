@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "chmod-parent-boundary",
+  "engine": "security-decision/v1",
+  "family": "sensitive-boundary",
+  "tags": ["shell", "outside-workspace", "negative-control"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "bash", "operation": "exec", "paths": [{ "path": "..", "inWorkspace": false, "class": "ordinary", "operation": "update" }], "exec": { "complete": true, "composed": false, "executable": "chmod", "argv": ["chmod", "-R", "777", ".."], "classified": true, "class": "known" } },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.SENSITIVE_BOUNDARY" }
+}

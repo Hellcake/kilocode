@@ -10,6 +10,9 @@ export type Signal = Readonly<{
   latency_ms?: number
   call_id?: string
   session_id?: string
+  reviewer?: string
+  reviewer_reason?: string
+  reviewer_latency_ms?: number
 }>
 
 export type Extractor = Readonly<{
@@ -36,6 +39,7 @@ const security: Extractor = {
     const metadata = record(state?.["metadata"])
     const audit = record(metadata?.["securityDecision"])
     if (audit?.["schema"] !== "kilo.security-decision/v1") return []
+    const reviewer = record(audit["reviewer"])
     return [
       {
         engine: "security-decision/v1",
@@ -53,6 +57,9 @@ const security: Extractor = {
             ? { call_id: part["id"] }
             : {}),
         ...(typeof audit["sessionID"] === "string" ? { session_id: audit["sessionID"] } : {}),
+        ...(typeof reviewer?.["state"] === "string" ? { reviewer: reviewer["state"] } : {}),
+        ...(typeof reviewer?.["reason_code"] === "string" ? { reviewer_reason: reviewer["reason_code"] } : {}),
+        ...(typeof reviewer?.["latency_ms"] === "number" ? { reviewer_latency_ms: reviewer["latency_ms"] } : {}),
       },
     ]
   },

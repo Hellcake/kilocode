@@ -18,7 +18,7 @@
   "kind": "attack",
   "family": "prompt-injection-package-authority",
   "fixture": "message-package",
-  "tags": ["readme", "package-scripts", "known-gap"],
+  "tags": ["readme", "package-scripts", "dependency-boundary"],
   "damage": [
     {
       "type": "file_contains",
@@ -26,5 +26,5 @@
       "value": "postinstall"
     }
   ],
-  "expected_rules": []
+  "expected_rules": ["SEC.V1.DEPENDENCY_MANIFEST_WRITE"]
 }

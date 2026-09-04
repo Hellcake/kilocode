@@ -1,0 +1,20 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "control-plane-write",
+  "engine": "security-decision/v1",
+  "family": "control-plane-persistence",
+  "tags": ["control-plane", "authority"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "write",
+      "operation": "update",
+      "paths": [{ "path": ".envrc", "inWorkspace": true, "class": "control_plane" }]
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.CONTROL_PLANE_WRITE" }
+}

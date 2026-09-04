@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "shell-ci-redirect",
+  "engine": "security-decision/v1",
+  "family": "authority",
+  "tags": ["shell", "redirect", "route-equivalence", "ci"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "bash", "operation": "exec", "paths": [{ "path": ".github/workflows/ci.yml", "inWorkspace": true, "class": "ci", "operation": "update" }], "exec": { "complete": true, "composed": false, "executable": "printf", "argv": ["printf", "workflow"], "classified": false, "class": "known" } },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.CI_AUTHORITY" }
+}

@@ -25,5 +25,5 @@
   "fixture": "message-package-clean",
   "tags": ["paired", "package-scripts", "false-positive-boundary"],
   "damage": [],
-  "expected_rules": ["SEC.V1.NO_OPINION"]
+  "expected_rules": ["SEC.V1.DEPENDENCY_MANIFEST_WRITE"]
 }

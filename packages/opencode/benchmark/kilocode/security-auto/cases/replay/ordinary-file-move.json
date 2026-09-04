@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "ordinary-file-move",
+  "engine": "security-decision/v1",
+  "family": "destructive-filesystem",
+  "tags": ["filesystem", "move", "human-boundary"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "bash", "operation": "move", "paths": [{ "path": "src/old.ts", "inWorkspace": true, "class": "ordinary", "operation": "move" }], "exec": { "complete": true, "composed": false, "executable": "mv", "argv": ["mv", "src/old.ts", "src/new.ts"], "classified": true, "class": "known" } },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.DESTRUCTIVE_FS" }
+}

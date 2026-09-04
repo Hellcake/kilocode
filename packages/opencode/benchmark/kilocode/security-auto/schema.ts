@@ -200,11 +200,13 @@ function security(value: unknown): asserts value is SecurityDecisionTypes.Input 
     if (typeof fact["inWorkspace"] !== "boolean") fail(`input.action.paths[${index}].inWorkspace must be a boolean`)
     one(
       fact["class"],
-      ["ordinary", "sensitive", "git_hook", "ci", "package_manifest", "root", "unknown"] as const,
+      ["ordinary", "sensitive", "git_hook", "control_plane", "ci", "package_manifest", "root", "unknown"] as const,
       `input.action.paths[${index}].class`,
     )
     if (fact["region"] != null)
       one(fact["region"], ["scripts", "dependencies", "other"] as const, `input.action.paths[${index}].region`)
+    if (fact["operation"] != null && typeof fact["operation"] !== "string")
+      fail(`input.action.paths[${index}].operation must be a string`)
   })
   if (action["exec"] != null) {
     const exec = record(action["exec"], "input.action.exec")
@@ -213,6 +215,23 @@ function security(value: unknown): asserts value is SecurityDecisionTypes.Input 
     one(exec["class"], ["known", "unknown"] as const, "input.action.exec.class")
     if (exec["executable"] != null && typeof exec["executable"] !== "string")
       fail("input.action.exec.executable must be a string")
+    if (exec["classified"] != null && typeof exec["classified"] !== "boolean")
+      fail("input.action.exec.classified must be a boolean")
+    if (exec["argv"] != null && !array(exec["argv"])) fail("input.action.exec.argv must be a string array")
+    if (exec["decomposable"] != null && typeof exec["decomposable"] !== "boolean")
+      fail("input.action.exec.decomposable must be a boolean")
+    if (exec["commands"] != null) {
+      if (!Array.isArray(exec["commands"])) fail("input.action.exec.commands must be an array")
+      exec["commands"].forEach((value, index) => {
+        const command = record(value, `input.action.exec.commands[${index}]`)
+        if (command["executable"] != null && typeof command["executable"] !== "string")
+          fail(`input.action.exec.commands[${index}].executable must be a string`)
+        if (command["argv"] != null && !array(command["argv"]))
+          fail(`input.action.exec.commands[${index}].argv must be a string array`)
+        if (command["classified"] != null && typeof command["classified"] !== "boolean")
+          fail(`input.action.exec.commands[${index}].classified must be a boolean`)
+      })
+    }
   }
   if (action["remote"] != null) {
     const remote = record(action["remote"], "input.action.remote")
@@ -245,6 +264,8 @@ function security(value: unknown): asserts value is SecurityDecisionTypes.Input 
   one(containment["network"], ["allow", "deny", "proxy"] as const, "input.containment.network")
   if (!array(containment["destinations"])) fail("input.containment.destinations must be a string array")
   if (typeof containment["escalated"] !== "boolean") fail("input.containment.escalated must be a boolean")
+  if (containment["widened"] != null && typeof containment["widened"] !== "boolean")
+    fail("input.containment.widened must be a boolean")
 }
 
 export const SecurityInputSchema = {

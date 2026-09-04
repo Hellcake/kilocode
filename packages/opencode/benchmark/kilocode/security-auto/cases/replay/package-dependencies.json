@@ -36,7 +36,7 @@
     }
   },
   "expected": {
-    "decision": "pass",
-    "rule_id": "SEC.V1.NO_OPINION"
+    "decision": "ask",
+    "rule_id": "SEC.V1.DEPENDENCY_MANIFEST_WRITE"
   }
 }

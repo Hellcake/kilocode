@@ -1,0 +1,21 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "inert-git-status",
+  "engine": "security-decision/v1",
+  "family": "unsafe-execution",
+  "tags": ["git", "allow-path"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "bash",
+      "operation": "exec",
+      "paths": [],
+      "exec": { "complete": true, "composed": false, "executable": "git", "argv": ["git", "status", "--short"], "classified": false, "class": "known" }
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "pass", "rule_id": "SEC.V1.NO_OPINION" }
+}

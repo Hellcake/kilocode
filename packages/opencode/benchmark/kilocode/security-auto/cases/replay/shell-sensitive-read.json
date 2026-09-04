@@ -1,0 +1,21 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "shell-sensitive-read",
+  "engine": "security-decision/v1",
+  "family": "sensitive-data",
+  "tags": ["shell", "route-equivalence", "secret"],
+  "input": {
+    "version": 1,
+    "action": {
+      "kind": "bash",
+      "operation": "exec",
+      "paths": [{ "path": ".env", "inWorkspace": true, "class": "sensitive", "operation": "read" }],
+      "exec": { "complete": true, "composed": false, "executable": "cat", "argv": ["cat", ".env"], "classified": true, "class": "known" }
+    },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.SENSITIVE_BOUNDARY" }
+}

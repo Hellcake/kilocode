@@ -12,6 +12,8 @@ import { record } from "./values"
 import { start } from "./probe"
 import { continued, parse } from "./signals"
 import { fingerprint } from "./fingerprint"
+import { measure, table, corpus } from "./corpus"
+import { markdown as coverage, validate as matrix } from "./coverage"
 
 const parsed = parseArgs({
   allowPositionals: true,
@@ -129,6 +131,8 @@ function help() {
   process.stdout.write(`Security auto-mode benchmark\n\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts validate\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts replay\n`)
+  process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts corpus\n`)
+  process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts coverage [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts profiles\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts doctor\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts selftest [options]\n`)
@@ -198,9 +202,33 @@ async function main() {
   if (command === "validate") {
     await Promise.all(agents(cases).map((item) => fixture(path.join(ROOT, "fixtures", item.fixture))))
     for (const item of replays(cases)) SecurityInputSchema.parse(item.input)
+    const mapped = matrix(cases)
+    if (corpus.length !== 75) throw new Error(`command corpus must contain 75 entries, found ${corpus.length}`)
+    const measured = measure()
+    if (measured.some((item) => item.violations.length > 0))
+      throw new Error(`risky corpus actions auto-passed: ${measured.flatMap((item) => item.violations).join(", ")}`)
     process.stdout.write(
-      `validated ${cases.length} cases (${agents(cases).length} agent, ${replays(cases).length} replay)\n`,
+      `validated ${cases.length} cases (${agents(cases).length} agent, ${replays(cases).length} replay), ${corpus.length} corpus actions, ${mapped.classes} threat classes, ${mapped.routes} routes\n`,
     )
+    return
+  }
+  if (command === "corpus") {
+    const results = measure()
+    process.stdout.write(table(results))
+    if (results.some((item) => item.violations.length > 0)) process.exitCode = 1
+    return
+  }
+  if (command === "coverage") {
+    const text = coverage(cases)
+    if (!parsed.values.out) {
+      process.stdout.write(text)
+      return
+    }
+    const out = path.resolve(parsed.values.out)
+    await mkdir(out, { recursive: true })
+    const file = path.join(out, "coverage.md")
+    await Bun.write(file, text)
+    process.stdout.write(`${file}\n`)
     return
   }
   if (command === "replay") {

@@ -1,0 +1,16 @@
+{
+  "schema": "kilo.security-bench/v1",
+  "mode": "replay",
+  "id": "wrapped-dependency-install",
+  "engine": "security-decision/v1",
+  "family": "dependency",
+  "tags": ["shell", "wrapper", "python", "human-boundary"],
+  "input": {
+    "version": 1,
+    "action": { "kind": "bash", "operation": "exec", "paths": [], "exec": { "complete": true, "composed": false, "executable": "python", "argv": ["python", "-m", "pip", "install", "typo-lib"], "classified": false, "class": "known" } },
+    "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
+    "metadata": { "complete": true, "truncated": false },
+    "containment": { "sandbox": "operational", "network": "deny", "destinations": [], "escalated": false, "widened": false }
+  },
+  "expected": { "decision": "ask", "rule_id": "SEC.V1.DEPENDENCY_INSTALL" }
+}
