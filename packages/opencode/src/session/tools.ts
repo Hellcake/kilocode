@@ -24,14 +24,16 @@ import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import * as SandboxPolicy from "@/kilocode/sandbox/policy" // kilocode_change
 // kilocode_change start - live containment facts for the deterministic security decision layer
-import { SandboxConfig } from "@/kilocode/sandbox/config"
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import { ContainmentMacos } from "@/kilocode/security-decision/containment-macos"
+import { SecurityRealpath } from "@/kilocode/security-decision/realpath"
+import { InstanceState } from "@/effect/instance-state"
 // kilocode_change end
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 // kilocode_change start
 import { Config } from "@/config/config"
+import { Database } from "@opencode-ai/core/database/database" // kilocode_change
 import { PermissionProvenance } from "@/kilocode/permission/provenance"
 import { McpApps } from "@/kilocode/mcp/apps"
 // kilocode_change end
@@ -78,6 +80,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const truncate = yield* Truncate.Service
   // kilocode_change start - permission provenance
   const config = yield* Config.Service
+  const database = yield* Database.Service // kilocode_change - live containment reads the session snapshot
   const cfg = yield* config.get()
   const permissionOrigins = cfg.permission_origins
   const notify = cfg.experimental?.shared_agent_board === true ? input.notify : undefined
@@ -98,7 +101,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const restricted = yield* SandboxPolicy.networkRestricted(input.session.id) // kilocode_change
   const sandboxed = (yield* SandboxPolicy.status(input.session.id)).enabled // kilocode_change
-  const sandboxState = SandboxConfig.resolve(cfg) // kilocode_change - exact mode and destinations for the audit
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => {
     const extra = {
       model: input.model,
@@ -121,16 +123,37 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         // kilocode_change - resolve live containment only while the security layer is enabled
         Effect.gen(function* () {
           const securityEnabled = SecurityDecisionAdapter.enabled()
-          const containment = securityEnabled
-            ? yield* Effect.promise(() =>
-                ContainmentMacos.facts({
-                  enabled: sandboxed,
-                  mode: sandboxState.mode,
-                  destinations: sandboxState.allowedHosts,
-                  escalated: extra.sandboxEscalation,
-                }),
+          // kilocode_change - the containment facts are read live, from the same per-session snapshot
+          // `SandboxPolicy.execute` runs the call under. Facts captured when the tool set was built
+          // go stale on a `/sandbox` toggle or a config reconcile, and the call would then be allowed
+          // against a profile it no longer executes under.
+          const live = securityEnabled
+            ? yield* SandboxPolicy.containment(input.session.id).pipe(
+                Effect.provideService(Config.Service, config),
+                Effect.provideService(Database.Service, database),
               )
             : undefined
+          const containment = live
+            ? yield* Effect.promise(() =>
+                ContainmentMacos.facts({ ...live, escalated: extra.sandboxEscalation }),
+              )
+            : undefined
+          // kilocode_change start - resolve filesystem identity once, before the decision runs, so a
+          // symlink is judged by what it points at while the pure core stays free of IO
+          const worktree = securityEnabled ? (yield* InstanceState.context).worktree : undefined
+          const securityPaths =
+            worktree !== undefined ? yield* Effect.promise(() => SecurityRealpath.paths(req, worktree)) : undefined
+          const facts = req.metadata?.["securityFacts"]
+          const securityFacts =
+            worktree !== undefined && facts && typeof facts === "object"
+              ? {
+                  ...(facts as Record<string, unknown>),
+                  effects: yield* Effect.promise(() =>
+                    SecurityRealpath.effects((facts as { effects?: unknown }).effects, worktree),
+                  ),
+                }
+              : undefined
+          // kilocode_change end
           return yield* KiloSessionPrompt.askPermission({
             permission,
             agents,
@@ -142,6 +165,16 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               ...req,
               sessionID: input.session.id,
               ...(containment ? { containment } : {}),
+              // kilocode_change - the resolved targets travel with the ask; patterns are untouched
+              ...(securityPaths || securityFacts
+                ? {
+                    metadata: {
+                      ...req.metadata,
+                      ...(securityPaths ? { securityPaths } : {}),
+                      ...(securityFacts ? { securityFacts } : {}),
+                    },
+                  }
+                : {}),
               // kilocode_change - persist the initial audit record before the call runs or asks
               ...(securityEnabled
                 ? {

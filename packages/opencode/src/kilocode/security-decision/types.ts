@@ -13,7 +13,15 @@ export namespace SecurityDecisionTypes {
   export type Authority = "hard" | "xdg_global" | "untrusted" | "unknown"
 
   /** Sensitivity class of a normalized path. `unknown` blocks any multi-target allow. */
-  export type PathClass = "ordinary" | "sensitive" | "git_hook" | "ci" | "package_manifest" | "root" | "unknown"
+  export type PathClass =
+    | "ordinary"
+    | "sensitive"
+    | "git_hook"
+    | "control_plane"
+    | "ci"
+    | "package_manifest"
+    | "root"
+    | "unknown"
 
   export type PathFact = Readonly<{
     path: string
@@ -21,6 +29,19 @@ export namespace SecurityDecisionTypes {
     class: PathClass
     /** Which region of a structured file the change touches, when the adapter could determine it. */
     region?: "scripts" | "dependencies" | "other"
+    /**
+     * Operation for this target specifically. One shell command can read one file and write another,
+     * so a fact may override the action-wide operation. Structured file tools leave it unset.
+     */
+    operation?: string
+  }>
+
+  /** One command of a sequence. A sequence of these is what a decomposable composed action is. */
+  export type ExecCommandFact = Readonly<{
+    executable?: string
+    argv?: readonly string[]
+    /** Whether the executable's own file semantics are known to the scan. */
+    classified?: boolean
   }>
 
   export type ExecFact = Readonly<{
@@ -29,6 +50,17 @@ export namespace SecurityDecisionTypes {
     /** Pipelines, substitutions, heredocs and other composition the scan observed. */
     composed: boolean
     executable?: string
+    /** The parsed command line, bounded. Present only for a single, fully recovered command. */
+    argv?: readonly string[]
+    /** Whether the executable's own file semantics are known to the scan. */
+    classified?: boolean
+    /**
+     * Whether the composition is pure sequencing over fully recovered commands. A composed action
+     * is judged command by command only when this holds; otherwise it stays opaque.
+     */
+    decomposable?: boolean
+    /** The recovered commands, in source order. Present only when the scan could name them all. */
+    commands?: readonly ExecCommandFact[]
     class: "known" | "unknown"
   }>
 
@@ -45,6 +77,12 @@ export namespace SecurityDecisionTypes {
     network: "allow" | "deny" | "proxy"
     destinations: readonly string[]
     escalated: boolean
+    /**
+     * Whether the execution profile grants write access beyond its own built-in roots. A configured
+     * extra writable path is exactly the case where a proven sandbox still does not bound the call,
+     * so it is reported as a fact rather than a path.
+     */
+    widened?: boolean
   }>
 
   export type Requirement = "sandbox" | "restricted_network"

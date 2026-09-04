@@ -7,6 +7,7 @@ const containment: SecurityDecisionTypes.Containment = {
   network: "allow",
   destinations: [],
   escalated: false,
+  widened: false,
 }
 
 function input(patch: {
@@ -215,5 +216,149 @@ describe("SecurityDecision.decide", () => {
     expect(out.reason).not.toContain("/Users/secret")
     expect(out.reason).not.toContain("rm")
     expect(out.reason).toMatch(/^SEC\.V1\./)
+  })
+})
+
+/**
+ * Proven confinement is the only evidence the layer has that an unclassified command cannot reach
+ * past the workspace. `UNCLASSIFIED_EXEC` is exactly the population that evidence can settle: the
+ * parse is complete, no deterministic path rule fired, and the command is simply not one the scan
+ * knows. Every other rule keeps absolute priority, and confinement never pierces the XDG floor or a
+ * human-only guard.
+ */
+describe("containment as evidence for an unclassified command", () => {
+  const exec: SecurityDecisionTypes.ExecFact = {
+    complete: true,
+    composed: false,
+    executable: "npm",
+    argv: ["npm", "test"],
+    classified: false,
+    class: "known",
+  }
+
+  const action = (paths: SecurityDecisionTypes.PathFact[] = []): SecurityDecisionTypes.Input["action"] => ({
+    kind: "bash",
+    operation: "exec",
+    paths,
+    exec,
+  })
+
+  const contained = {
+    sandbox: "operational",
+    network: "deny",
+    destinations: [],
+    escalated: false,
+    widened: false,
+  } as const
+
+  test("allows an unclassified command inside a proven sandbox with no network", () => {
+    const out = SecurityDecision.decide(input({ action: action(), containment: contained }))
+    expect(out.decision).toBe("allow")
+    expect(out.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    expect(out.requirements).toEqual(["sandbox", "restricted_network"])
+    expect(out.reviewable).toBe(false)
+  })
+
+  test.each([["off"], ["unknown"], ["unavailable"], ["failed"]] as const)(
+    "keeps the ask when the sandbox is %s",
+    (sandbox) => {
+      const out = SecurityDecision.decide(input({ action: action(), containment: { ...contained, sandbox } }))
+      expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+      expect(out.decision).toBe("ask")
+    },
+  )
+
+  test("keeps the ask when the sandbox is operational but the network is open", () => {
+    const out = SecurityDecision.decide(input({ action: action(), containment: { ...contained, network: "allow" } }))
+    expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+  })
+
+  test("allows through a proxy only when the destinations are exact", () => {
+    const bounded = SecurityDecision.decide(
+      input({ action: action(), containment: { ...contained, network: "proxy", destinations: ["registry.npmjs.org"] } }),
+    )
+    expect(bounded.rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+    const unbounded = SecurityDecision.decide(
+      input({ action: action(), containment: { ...contained, network: "proxy" } }),
+    )
+    expect(unbounded.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+  })
+
+  test("keeps the ask when the profile grants write beyond its built-in roots", () => {
+    const out = SecurityDecision.decide(input({ action: action(), containment: { ...contained, widened: true } }))
+    expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(out.decision).toBe("ask")
+  })
+
+  test("keeps the ask when the call escalated out of the sandbox", () => {
+    const out = SecurityDecision.decide(input({ action: action(), containment: { ...contained, escalated: true } }))
+    expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+  })
+
+  test("keeps the ask when a target left the workspace or could not be named", () => {
+    const outside = SecurityDecision.decide(
+      input({
+        action: action([path({ path: "/etc/hosts", inWorkspace: false })]),
+        containment: contained,
+      }),
+    )
+    expect(outside.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    const unnamed = SecurityDecision.decide(
+      input({ action: action([path({ path: "", class: "unknown" })]), containment: contained }),
+    )
+    expect(unnamed.rule_id).toBe("SEC.V1.UNKNOWN_TARGET")
+  })
+
+  test("never overrides a deterministic path rule", () => {
+    const hook = SecurityDecision.decide(
+      input({
+        action: {
+          ...action([path({ path: ".git/hooks/pre-commit", class: "git_hook" })]),
+          operation: "update",
+        },
+        containment: contained,
+      }),
+    )
+    expect(hook.rule_id).toBe("SEC.V1.GIT_HOOK_WRITE")
+    expect(hook.decision).toBe("deny")
+  })
+
+  test("never overrides the dependency boundary", () => {
+    const out = SecurityDecision.decide(
+      input({
+        action: {
+          ...action(),
+          exec: { ...exec, argv: ["npm", "install", "lodash"] },
+        },
+        containment: contained,
+      }),
+    )
+    expect(out.rule_id).toBe("SEC.V1.DEPENDENCY_INSTALL")
+  })
+
+  test("never narrows a human-only ask", () => {
+    const out = SecurityDecision.decide(
+      input({ action: action(), containment: contained, baseline: { humanOnly: true } }),
+    )
+    expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
+    expect(out.decision).toBe("ask")
+  })
+
+  test("never pierces an authority floor the layer did not raise itself", () => {
+    for (const authority of ["xdg_global", "hard", "unknown"] as const) {
+      const out = SecurityDecision.decide(input({ action: action(), containment: contained, baseline: { authority } }))
+      expect({ authority, rule: out.rule_id }).toEqual({ authority, rule: "SEC.V1.UNCLASSIFIED_EXEC" })
+    }
+  })
+
+  test("an incomplete or composed parse is never contained evidence", () => {
+    const incomplete = SecurityDecision.decide(
+      input({ action: { ...action(), exec: { ...exec, complete: false } }, containment: contained }),
+    )
+    expect(incomplete.rule_id).toBe("SEC.V1.EXEC_INCOMPLETE")
+    const composed = SecurityDecision.decide(
+      input({ action: { ...action(), exec: { ...exec, composed: true } }, containment: contained }),
+    )
+    expect(composed.rule_id).toBe("SEC.V1.EXEC_COMPOSED")
   })
 })

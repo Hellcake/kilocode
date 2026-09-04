@@ -62,12 +62,20 @@ export namespace ContainmentMacos {
     mode: "allow" | "deny" | "proxy"
     destinations: readonly string[]
     escalated: boolean
+    /** Whether the live profile adds writable roots beyond the ones it builds itself. */
+    widened: boolean
   }>
 
   /** Assemble the backend-neutral containment facts the core consumes. */
   export async function facts(live: Live, runner?: Runner): Promise<T.Containment> {
     const sandbox = live.enabled ? await probe(runner) : ("off" as const)
-    return { sandbox, network: live.mode, destinations: live.destinations, escalated: live.escalated }
+    return {
+      sandbox,
+      network: live.mode,
+      destinations: live.destinations,
+      escalated: live.escalated,
+      widened: live.widened,
+    }
   }
 
   function profile(scratch: string): Profile {

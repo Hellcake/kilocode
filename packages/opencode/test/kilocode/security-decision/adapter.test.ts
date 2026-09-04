@@ -79,13 +79,30 @@ describe("SecurityDecisionAdapter.evaluate", () => {
     expect(out.rule_id).toBe("SEC.V1.METADATA_INCOMPLETE")
   })
 
-  test("has no opinion on a shell command that parsed completely and is not composed", () => {
+  test("has no opinion on a shell command proven inert", () => {
     const out = evaluate({
       permission: "bash",
       patterns: ["git status"],
-      metadata: { command: "git status", securityFacts: { complete: true, composed: false } },
+      metadata: {
+        command: "git status",
+        securityFacts: { complete: true, composed: false, executable: "git", argv: ["git", "status"] },
+      },
     })
     expect(out.decision).toBe("pass")
+  })
+
+  // kilocode_change - a clean parse is not proof of safety; an unclassified action is a reviewable ask
+  test("asks for a fully parsed command whose effects it does not know", () => {
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["sed -i s/a/b/ f"],
+      metadata: {
+        command: "sed -i s/a/b/ f",
+        securityFacts: { complete: true, composed: false, executable: "sed", argv: ["sed", "-i", "s/a/b/", "f"] },
+      },
+    })
+    expect(out.decision).toBe("ask")
+    expect(out.rule_id).toBe("SEC.V1.UNCLASSIFIED_EXEC")
   })
 
   test("asks for a composed shell command", () => {

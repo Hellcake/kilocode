@@ -1,5 +1,6 @@
 import path from "path"
 import { SecurityDecision } from "./core"
+import { SecurityManifest } from "./manifest"
 import { SecurityDecisionRules as R } from "./rules"
 import { SecurityReviewer } from "./reviewer"
 import type { SecurityAuthority } from "./authority"
@@ -92,7 +93,14 @@ export namespace SecurityDecisionAdapter {
     sessionID: string
   }
 
-  export type Directive = Readonly<{ decision: T.Decision; rule_id: string; reviewable: boolean; audit: Audit }>
+  export type Directive = Readonly<{
+    decision: T.Decision
+    rule_id: string
+    reviewable: boolean
+    /** Bounded context for the reviewer. Present only for a reviewable ask, never for a deny. */
+    review?: SecurityReviewer.Request
+    audit: Audit
+  }>
 
   /**
    * Server-side feature flag. It lives in the process environment precisely so a project config,
@@ -103,12 +111,17 @@ export namespace SecurityDecisionAdapter {
     return value === "1" || value === "true"
   }
 
+  /** Device nodes that discard or echo output rather than persisting a file. */
+  const SINKS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "/dev/zero"])
+
+  const OPERATIONS = new Set(["read", "update", "delete", "move"])
+
   function posix(value: string) {
     return value.replaceAll("\\", "/")
   }
 
   /** Canonicalize a permission pattern into a path fact. No IO: the workspace is compared textually. */
-  function classify(pattern: string, workspace: string): T.PathFact {
+  function classify(pattern: string, workspace: string, region: SecurityManifest.Region = "other"): T.PathFact {
     if (!pattern || pattern === "*") return { path: pattern, inWorkspace: true, class: "unknown" }
     const raw = posix(pattern)
     const normalized = path.posix.normalize(raw)
@@ -116,6 +129,9 @@ export namespace SecurityDecisionAdapter {
     const relative = absolute ? path.posix.relative(posix(workspace), normalized) : normalized
     const inWorkspace = !relative.startsWith("../") && relative !== ".." && !(absolute && relative === normalized)
 
+    // `> /dev/null` is the canonical discard, not a device write, and nothing persists past the
+    // process — so it is neither a root target nor a boundary crossing. Other device nodes stay root.
+    if (SINKS.has(normalized)) return { path: normalized, inWorkspace: true, class: "ordinary" }
     if (normalized === "/" || normalized.startsWith("/dev/"))
       return { path: normalized, inWorkspace: false, class: "root" }
 
@@ -125,16 +141,24 @@ export namespace SecurityDecisionAdapter {
       path: target,
       inWorkspace,
       class: cls,
-      ...(cls === "package_manifest" ? { region: "other" as const } : {}),
+      ...(cls === "package_manifest" ? { region } : {}),
     }
   }
 
   function pathClass(target: string): T.PathClass {
     const base = path.posix.basename(target)
     if (/(^|\/)\.git\/hooks\//.test(target)) return "git_hook"
+    // Control plane: hook redirection, filter drivers and direnv all install code that later runs.
+    if (
+      /(^|\/)\.git\/config$/.test(target) ||
+      /(^|\/)\.git\/info\/attributes$/.test(target) ||
+      base === ".gitattributes" ||
+      base === ".envrc"
+    )
+      return "control_plane"
     if (/(^|\/)\.github\/workflows\//.test(target) || base === ".gitlab-ci.yml" || /(^|\/)\.circleci\//.test(target))
       return "ci"
-    if (base === "package.json") return "package_manifest"
+    if (SecurityManifest.is(base)) return "package_manifest"
     if (
       base === ".env" ||
       base.startsWith(".env.") ||
@@ -168,19 +192,114 @@ export namespace SecurityDecisionAdapter {
     return "unknown"
   }
 
+  /** Bound on how many commands of one sequence the layer will reason about. */
+  const MAX_COMMANDS = 32
+
+  function unit(item: unknown): T.ExecCommandFact {
+    if (!item || typeof item !== "object") return {}
+    const value = item as { executable?: unknown; argv?: unknown; classified?: unknown }
+    return {
+      ...(typeof value.executable === "string" ? { executable: value.executable } : {}),
+      argv: Array.isArray(value.argv) ? value.argv.filter((token): token is string => typeof token === "string") : [],
+      classified: value.classified === true,
+    }
+  }
+
   function exec(request: Request): T.ExecFact | undefined {
     if (!EXECS.has(request.permission)) return undefined
     const facts = request.metadata?.["securityFacts"]
     // No facts at all is a plumbing gap, not an unparsed command: report it as missing metadata.
     if (!facts || typeof facts !== "object") return undefined
-    const value = facts as { complete?: unknown; composed?: unknown; executable?: unknown }
+    const value = facts as {
+      complete?: unknown
+      composed?: unknown
+      executable?: unknown
+      argv?: unknown
+      classified?: unknown
+      decomposable?: unknown
+      commands?: unknown
+    }
+    const argv = Array.isArray(value.argv) ? value.argv.filter((item): item is string => typeof item === "string") : []
+    const commands = Array.isArray(value.commands) ? value.commands.slice(0, MAX_COMMANDS).map(unit) : undefined
     return {
       complete: value.complete === true,
       composed: value.composed === true,
+      classified: value.classified === true,
+      decomposable: value.decomposable === true,
+      ...(commands ? { commands } : {}),
+      argv,
       ...(typeof value.executable === "string"
         ? { executable: value.executable, class: "known" as const }
         : { class: "unknown" as const }),
     }
+  }
+
+  /**
+   * Real targets resolved before the ask, index-aligned with `patterns`. An empty entry means the
+   * resolution could not determine the target, which classifies as unknown and holds at ask; a
+   * missing array means no resolution was attempted and the pattern itself stands.
+   */
+  function resolved(request: Request): Array<string> | undefined {
+    const value = request.metadata?.["securityPaths"]
+    if (!Array.isArray(value)) return undefined
+    return value.map((item) => (typeof item === "string" ? item : item === null ? "" : undefined)) as string[]
+  }
+
+  /**
+   * File effects the shell scan extracted, normalized into path facts so a shell route reaches the
+   * same rules as `edit`/`write`/`read`. An effect without a path is a target the scan could not
+   * determine: it becomes an `unknown` fact, which the core holds at ask.
+   */
+  function effects(request: Request, workspace: string): T.PathFact[] {
+    const facts = request.metadata?.["securityFacts"]
+    if (!facts || typeof facts !== "object") return []
+    const list = (facts as { effects?: unknown }).effects
+    if (!Array.isArray(list)) return []
+    const out: T.PathFact[] = []
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue
+      const value = item as { operation?: unknown; path?: unknown }
+      if (typeof value.operation !== "string" || !OPERATIONS.has(value.operation)) continue
+      if (typeof value.path !== "string" || value.path.length === 0) {
+        out.push({ path: "", inWorkspace: false, class: "unknown", operation: value.operation })
+        continue
+      }
+      out.push({ ...classify(value.path, workspace), operation: value.operation })
+    }
+    return out
+  }
+
+  /**
+   * Path facts read off the command line itself.
+   *
+   * The effect table only names files for executables the scan knows, so an unknown reader — `xxd`,
+   * `strings`, `openssl` — reports no effect at all. Confinement cannot settle those: the sandbox
+   * constrains writes and network, but the command's own output leaves it for the model context, so
+   * an argument that *names* sensitive material has to become a fact of its own.
+   *
+   * Only notable arguments are reported. An ordinary in-workspace path is what every build and test
+   * command carries and says nothing; a glob the classifier cannot resolve is not evidence of
+   * sensitivity either, and a URL is not a path however much its tail looks like one.
+   */
+  function argvPaths(facts: T.ExecFact | undefined, workspace: string): T.PathFact[] {
+    if (!facts) return []
+    const out: T.PathFact[] = []
+    const seen = new Set<string>()
+    for (const unit of facts.commands && facts.commands.length > 0 ? facts.commands : [facts]) {
+      // The executable's own name is not one of its arguments.
+      for (const token of (unit.argv ?? []).slice(1)) {
+        if (token.length === 0 || token.startsWith("-") || token.includes("://")) continue
+        // `@file` is how curl and friends spell "read this file", so the reference is the tail.
+        const fact = classify(token.startsWith("@") ? token.slice(1) : token, workspace)
+        if (fact.class === "unknown") continue
+        if (fact.class === "ordinary" && fact.inWorkspace) continue
+        if (seen.has(fact.path)) continue
+        seen.add(fact.path)
+        // Reading is the least the command can be doing with a path it names.
+        out.push({ ...fact, operation: "read" })
+      }
+    }
+    return out
   }
 
   /** MCP asks arrive as an unregistered permission name with a `*` pattern and empty metadata. */
@@ -190,11 +309,21 @@ export namespace SecurityDecisionAdapter {
 
   function toInput(request: Request, ctx: Context): T.Input {
     const kind = delegated(request) ? "mcp" : request.permission
-    const paths =
-      EXECS.has(request.permission) || kind === "mcp"
-        ? []
-        : request.patterns.map((pattern) => classify(pattern, ctx.workspace))
     const facts = exec(request)
+    // Shell patterns are commands, not paths: its targets come from the scan's structured effects,
+    // plus the notable paths its own command line names.
+    const paths =
+      kind === "mcp"
+        ? []
+        : EXECS.has(request.permission)
+          ? [...effects(request, ctx.workspace), ...argvPaths(facts, ctx.workspace)]
+          : (() => {
+              // A symlink must be judged by what it points at, so the resolved target wins.
+              const real = resolved(request)
+              // The diff is the only view of *what* changed, so the manifest region comes from it.
+              const region = SecurityManifest.region(request.metadata?.["diff"])
+              return request.patterns.map((pattern, index) => classify(real?.[index] ?? pattern, ctx.workspace, region))
+            })()
     const complete = !EXECS.has(request.permission) || facts !== undefined
     return {
       version: 1,
@@ -234,13 +363,27 @@ export namespace SecurityDecisionAdapter {
   export function evaluate(request: Request, ctx: Context): Directive {
     const started = Date.now()
     try {
-      const result = SecurityDecision.decide(toInput(request, ctx))
-      const reviewed = SecurityReviewer.review(result)
+      const input = toInput(request, ctx)
+      const result = SecurityDecision.decide(input)
       return {
-        decision: reviewed.result.decision,
-        rule_id: reviewed.result.rule_id,
-        reviewable: reviewed.result.reviewable,
-        audit: { ...audit(request, ctx, reviewed.result, started), reviewer: reviewed.outcome },
+        decision: result.decision,
+        rule_id: result.rule_id,
+        reviewable: result.reviewable,
+        ...(result.decision === "ask" && result.reviewable
+          ? {
+              review: SecurityReviewer.request({
+                rule_id: result.rule_id,
+                kind: input.action.kind,
+                operation: input.action.operation,
+                ...(input.action.exec?.executable ? { executable: input.action.exec.executable } : {}),
+                argv: input.action.exec?.argv,
+                ...(input.action.exec?.commands ? { commands: input.action.exec.commands } : {}),
+                paths: input.action.paths,
+                containment: ctx.containment,
+              }),
+            }
+          : {}),
+        audit: audit(request, ctx, result, started),
       }
     } catch {
       // Anything unexpected in normalization, the core or the reviewer fails closed to ask.

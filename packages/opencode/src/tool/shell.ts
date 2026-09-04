@@ -22,7 +22,13 @@ import { normalizeUrls } from "@/kilocode/util/url" // kilocode_change
 import { CommandTimeout } from "@/kilocode/command-timeout" // kilocode_change
 import { heredocs } from "@/kilocode/tool/shell-heredoc" // kilocode_change
 import { unparsed } from "@/kilocode/tool/shell-unparsed" // kilocode_change
-import { securityFacts } from "@/kilocode/tool/shell-security-facts" // kilocode_change
+import {
+  securityFacts,
+  commandOperation,
+  dynamicArguments,
+  redirectTargets,
+  type ShellEffect,
+} from "@/kilocode/tool/shell-security-facts" // kilocode_change
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
@@ -44,6 +50,18 @@ const FILES = new Set([
   "chmod",
   "chown",
   "cat",
+  // kilocode_change start - read-only file readers. They belong here for the same reason `cat` does:
+  // the scanner has to see their target to classify it, and the security layer must reach the same
+  // rule whichever reader named the file. Deliberately excludes readers that can write their own
+  // output (`sort -o`, `uniq out`) and `find`, whose `-exec` runs an arbitrary command.
+  "head",
+  "tail",
+  "wc",
+  "nl",
+  "stat",
+  "file",
+  "diff",
+  // kilocode_change end
   // Leave PowerShell aliases out for now. Common ones like cat/cp/mv/rm/mkdir
   // already hit the entries above, and alias normalization should happen in one
   // place later so we do not risk double-prompting.
@@ -57,7 +75,7 @@ const FILES = new Set([
   "rename-item",
 ])
 // kilocode_change start
-const READ = new Set(["cat", "get-content"])
+const READ = new Set(["cat", "get-content", "head", "tail", "wc", "nl", "stat", "file", "diff"])
 // kilocode_change end
 const CMD_FILES = new Set([
   "copy",
@@ -90,6 +108,7 @@ type Scan = {
   patterns: Set<string>
   always: Set<string>
   access: Access // kilocode_change
+  effects: ShellEffect[] // kilocode_change - structured file effects for the security decision layer
 }
 
 type Chunk = {
@@ -378,6 +397,7 @@ export const ShellPermission = Effect.gen(function* () {
       patterns: new Set<string>(),
       always: new Set<string>(),
       access: "read",
+      effects: [], // kilocode_change
     }
     const kind = ShellID.toKind(Shell.name(shell))
 
@@ -394,9 +414,15 @@ export const ShellPermission = Effect.gen(function* () {
 
       if (cmd && (FILES.has(cmd) || (kind === "cmd" && CMD_FILES.has(cmd)))) {
         const accessKind = access(cmd, node)
+        const operation = commandOperation(cmd) // kilocode_change
+        // kilocode_change - an expanded argument never reaches the token list; record it as unknown
+        if (operation && dynamicArguments(node)) scan.effects.push({ operation })
         for (const arg of pathArgs(command, ps, kind === "cmd")) {
           const resolved = yield* argpath(arg, cwd, ps, shell)
           yield* Effect.logInfo("resolved path", { arg, resolved })
+          // kilocode_change - an argument the scanner could not resolve is reported without a path,
+          // so the security core sees an unknown target instead of nothing at all
+          if (operation) scan.effects.push(resolved ? { operation, path: resolved } : { operation })
           if (!resolved || containsPath(resolved, instance)) continue
           const dir = (yield* fs.isDir(resolved)) ? resolved : path.dirname(resolved)
           scan.dirs.add(dir)
@@ -409,6 +435,13 @@ export const ShellPermission = Effect.gen(function* () {
         scan.always.add(BashArity.prefix(tokens).join(" ") + " *")
       }
     }
+
+    // kilocode_change start - redirect destinations are file effects too, and reach the same rules
+    for (const target of redirectTargets(root)) {
+      const resolved = target.text ? yield* argpath(target.text, cwd, ps, shell) : undefined
+      scan.effects.push(resolved ? { operation: target.operation, path: resolved } : { operation: target.operation })
+    }
+    // kilocode_change end
 
     // kilocode_change start - fail closed on commands the grammar failed to parse (#12326)
     const lost = unparsed(root, nodes.length)
@@ -432,18 +465,24 @@ export const ShellPermission = Effect.gen(function* () {
         const nodes = commands(tree.rootNode)
         const metadata = {
           ...heredocs(tree.rootNode, ShellID.toKind(Shell.name(input.shell))),
-          securityFacts: securityFacts(tree.rootNode, unparsed(tree.rootNode, nodes.length).length, nodes),
+          securityFacts: {
+            ...securityFacts(tree.rootNode, unparsed(tree.rootNode, nodes.length).length, nodes),
+            effects: scan.effects,
+          },
         }
         // kilocode_change end
         if (!containsPath(input.cwd, instance)) {
           scan.dirs.add(input.cwd)
           scan.access = "unknown"
         }
-        yield* ask(ctx, scan, input.command, metadata, input.description) // kilocode_change
-        const gitMutation = nodes.some((node) => mutatesGit(node.text)) // kilocode_change - reuse the scan above
+        // kilocode_change start - an approved escalation removes the confinement, so it has to be
+        // settled before the command itself is decided: the security layer reads the escalation flag
+        // as a containment fact, and reading it after this ask would judge the call under a sandbox
+        // that no longer applies to it.
+        const gitMutation = nodes.some((node) => mutatesGit(node.text)) // reuse the scan above
         if (input.escalate && gitMutation) {
           yield* ctx.ask({
-            permission: "sandbox_escalation", // kilocode_change
+            permission: "sandbox_escalation",
             patterns: [input.command],
             always: [],
             metadata: {
@@ -453,6 +492,8 @@ export const ShellPermission = Effect.gen(function* () {
             },
           })
         }
+        // kilocode_change end
+        yield* ask(ctx, scan, input.command, metadata, input.description) // kilocode_change
       }),
     )
   })

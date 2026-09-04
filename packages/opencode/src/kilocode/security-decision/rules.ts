@@ -33,6 +33,14 @@ export namespace SecurityDecisionRules {
   export const DESTRUCTIVE_ROOT = entry("SEC.V1.DESTRUCTIVE_ROOT", "deny")
   export const GIT_HOOK_WRITE = entry("SEC.V1.GIT_HOOK_WRITE", "deny")
 
+  /**
+   * Repository control plane. These files do not execute themselves, but writing them installs code
+   * that later runs — `core.hooksPath`, filter drivers, direnv. They ask rather than deny: a human
+   * routinely edits `.gitattributes`, and the shell route cannot see `git config`, so denying here
+   * would open a new route asymmetry instead of closing one.
+   */
+  export const CONTROL_PLANE_WRITE = entry("SEC.V1.CONTROL_PLANE_WRITE", "ask")
+
   /** Ambiguity, incompleteness and authority boundaries: ask, never deny. */
   export const AMBIGUOUS_OPERATION = entry("SEC.V1.AMBIGUOUS_OPERATION", "ask")
   export const METADATA_INCOMPLETE = entry("SEC.V1.METADATA_INCOMPLETE", "ask")
@@ -49,8 +57,34 @@ export namespace SecurityDecisionRules {
   /** Adapter, core or reviewer failure — always fails closed to ask. */
   export const INTERNAL_ERROR = entry("SEC.V1.INTERNAL_ERROR", "ask")
 
+  /**
+   * Fetching an external package. The name is chosen by the model, so allowing it without a human
+   * is what makes a hallucinated or squatted name reach the machine. Never reviewable: the reviewer
+   * sees only the command line, which is exactly the evidence that cannot tell the two apart.
+   */
+  export const DEPENDENCY_INSTALL = entry("SEC.V1.DEPENDENCY_INSTALL", "ask")
+
+  /** A write to a dependency manifest or lockfile: the same new-dependency boundary, declared. */
+  export const DEPENDENCY_MANIFEST_WRITE = entry("SEC.V1.DEPENDENCY_MANIFEST_WRITE", "ask")
+
+  /**
+   * An unclassified command the sandbox provably confines. This is the one rule that grants: a
+   * complete parse plus proven confinement, a closed or exactly bounded network and no escalation
+   * is the only evidence the layer has that a command it cannot name still cannot reach past the
+   * workspace. Every deterministic path rule, the dependency boundary, the XDG floor and any
+   * human-only guard outrank it.
+   */
+  export const CONTAINED_EXEC = entry("SEC.V1.CONTAINED_EXEC", "allow", false, ["sandbox", "restricted_network"])
+
   /** Soft ambiguity a human routinely resolves: reviewable once a reviewer exists. */
   export const DESTRUCTIVE_FS = entry("SEC.V1.DESTRUCTIVE_FS", "ask", true)
+
+  /**
+   * A shell action the parser fully recovered that produced no confident file effect. A complete
+   * parse is not proof of safety — `sed -i`, `git push --force` and `npm publish` all parse cleanly.
+   * It is reviewable precisely because a narrow, bounded judgement is what it needs.
+   */
+  export const UNCLASSIFIED_EXEC = entry("SEC.V1.UNCLASSIFIED_EXEC", "ask", true)
 
   export function result(rule: Entry): SecurityDecisionTypes.Result {
     return {
