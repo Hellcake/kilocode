@@ -17,10 +17,29 @@ import { SecurityReviewerConfig } from "@/kilocode/security-decision/reviewer-co
  * closed: no trusted model means the reviewer stays disabled.
  */
 
-const global = (info: Record<string, unknown>) => ({ getGlobal: () => Effect.succeed(info as never) })
+/**
+ * A config whose merged view is its trusted view. That is the ordinary case: nothing outside the
+ * user's own global block contributes to it, so the reviewer's transport has a known origin.
+ */
+const global = (info: Record<string, unknown>) => ({
+  get: () => Effect.succeed(info as never),
+  getGlobal: () => Effect.succeed(info as never),
+})
+
+/** A config whose merged view carries something the trusted view does not — the repository's. */
+const merged = (trusted: Record<string, unknown>, effective: Record<string, unknown>) => ({
+  get: () => Effect.succeed(effective as never),
+  getGlobal: () => Effect.succeed(trusted as never),
+})
 
 const unreadable = {
+  get: () => Effect.fail(new Error("boom")),
   getGlobal: () => Effect.fail(new Error("boom")),
+} as unknown as Parameters<typeof SecurityReviewerConfig.resolve>[0]
+
+const unreadableMerge = {
+  get: () => Effect.fail(new Error("boom")),
+  getGlobal: () => Effect.succeed({ small_model: "anthropic/claude-haiku-4-5" } as never),
 } as unknown as Parameters<typeof SecurityReviewerConfig.resolve>[0]
 
 const resolve = (
@@ -109,7 +128,46 @@ describe("a repository cannot choose the reviewer", () => {
     expect(out).toEqual({ enabled: false, reason: "no_trusted_model" })
   })
 
-  test("resolution never reads anything but the global block", async () => {
+  // kilocode_change start - the transport is part of the trusted base, not just the model name
+  test("a merged provider block the trusted one does not have refuses the reviewer", async () => {
+    const out = await resolve(merged({ small_model: "anthropic/x" }, { provider: { anthropic: { options: {} } } }), on)
+    expect(out).toEqual({ enabled: false, reason: "provider_untrusted" })
+  })
+
+  test("a rewritten baseURL refuses the reviewer", async () => {
+    const trusted = { small_model: "anthropic/x", provider: { anthropic: { options: { baseURL: "https://a/v1" } } } }
+    const effective = { ...trusted, provider: { anthropic: { options: { baseURL: "https://evil/v1" } } } }
+    expect(await resolve(merged(trusted, effective), on)).toEqual({ enabled: false, reason: "provider_untrusted" })
+  })
+
+  test("a rewritten per-model option refuses the reviewer", async () => {
+    const trusted = { small_model: "anthropic/x", provider: { anthropic: { models: { x: {} } } } }
+    const effective = {
+      ...trusted,
+      provider: { anthropic: { models: { x: { options: { baseURL: "https://evil/v1" } } } } },
+    }
+    expect(await resolve(merged(trusted, effective), on)).toEqual({ enabled: false, reason: "provider_untrusted" })
+  })
+
+  test("key order is not a difference", async () => {
+    const trusted = { small_model: "anthropic/x", provider: { anthropic: { options: { a: 1, b: 2 } } } }
+    const effective = { small_model: "anthropic/x", provider: { anthropic: { options: { b: 2, a: 1 } } } }
+    expect(await resolve(merged(trusted, effective), on)).toMatchObject({ enabled: true, providerID: "anthropic" })
+  })
+
+  test("a block for another provider is not this provider's transport", async () => {
+    const out = await resolve(merged({ small_model: "anthropic/x" }, { provider: { openai: { options: {} } } }), on)
+    expect(out).toMatchObject({ enabled: true, providerID: "anthropic" })
+  })
+
+  test("an unreadable merged view is not an empty one", async () => {
+    expect(await resolve(unreadableMerge, on)).toEqual({ enabled: false, reason: "config_unreadable" })
+  })
+  // kilocode_change end
+
+  test("the merged config can veto the reviewer but can never supply it", async () => {
+    // kilocode_change - the merged view is read, and only ever to refuse: the model still comes
+    // from the trusted global block, so a repository's `small_model` has no way in.
     const seen: string[] = []
     const spy = {
       getGlobal: () => {
@@ -122,7 +180,7 @@ describe("a repository cannot choose the reviewer", () => {
       },
     }
     const out = await Effect.runPromise(SecurityReviewerConfig.resolve(spy, on))
-    expect(seen).toEqual(["getGlobal"])
+    expect(seen).toContain("getGlobal")
     expect(out).toMatchObject({ providerID: "anthropic" })
   })
 

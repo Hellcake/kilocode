@@ -17,7 +17,16 @@ const provider = (found = true) => ({
   getModel: () => (found ? Effect.succeed(model) : Effect.fail(new Error("missing"))),
 })
 
-const global = (info: Record<string, unknown>) => ({ getGlobal: () => Effect.succeed(info as never) })
+const global = (info: Record<string, unknown>) => ({
+  get: () => Effect.succeed(info as never),
+  getGlobal: () => Effect.succeed(info as never),
+})
+
+/** Merged config carrying something the trusted global block does not: a repository's contribution. */
+const merged = (trustedInfo: Record<string, unknown>, effective: Record<string, unknown>) => ({
+  get: () => Effect.succeed(effective as never),
+  getGlobal: () => Effect.succeed(trustedInfo as never),
+})
 
 const install = (
   config: Parameters<typeof SecurityReviewerBinding.install>[0],
@@ -73,6 +82,58 @@ describe("the reviewer's request is isolated from the agent session", () => {
     expect(Object.keys(seen[0]!).sort()).toEqual(["system", "user"])
     expect(JSON.stringify(seen[0])).not.toContain("sessionID")
   })
+
+  // kilocode_change start - the isolation is structural, so assert the structure rather than trusting
+  // that nothing downstream ever adds a field. Anything that could carry the agent's world into the
+  // reviewer would have to appear as a key here first.
+  test("the stream request has exactly the fields it needs and no others", () => {
+    expect(Object.keys(SecurityReviewerBinding.request(model, prompt)).sort()).toEqual([
+      "agent",
+      "messages",
+      "model",
+      "retries",
+      "sessionID",
+      "small",
+      "system",
+      "tools",
+      "user",
+    ])
+  })
+
+  test("inherits no permissions: there is no ruleset on the request at all", () => {
+    const out = SecurityReviewerBinding.request(model, prompt) as Record<string, unknown>
+    expect(out["permission"]).toBeUndefined()
+    expect(out["parentSessionID"]).toBeUndefined()
+    expect(out["preflight"]).toBeUndefined()
+  })
+
+  test("carries no transcript: exactly one user message and one system prompt", () => {
+    const out = SecurityReviewerBinding.request(model, prompt)
+    expect(out.messages.length).toBe(1)
+    expect(out.system.length).toBe(1)
+    expect(out.user.role).toBe("user")
+    // The synthetic user message is the request's own envelope, not a turn of the conversation.
+    expect(String(out.user.sessionID)).toBe("security-reviewer")
+  })
+
+  test("carries no project instructions, skills, memories, plugins or MCP tools", () => {
+    // The agent's own `prompt` is asserted empty separately; nothing else in this shape may name a
+    // source of context at all.
+    const serialized = JSON.stringify(SecurityReviewerBinding.request(model, prompt))
+    for (const marker of ["AGENTS.md", "instructions", "skill", "memor", "plugin", "mcp"]) {
+      expect(serialized.toLowerCase()).not.toContain(marker.toLowerCase())
+    }
+  })
+
+  test("the agent identity is the layer's own, with nothing configured on it", () => {
+    const agent = SecurityReviewerBinding.request(model, prompt).agent as unknown as Record<string, unknown>
+    expect(agent["name"]).toBe("security-reviewer")
+    expect(agent["hidden"]).toBe(true)
+    expect(agent["permission"]).toEqual([])
+    expect(agent["options"]).toEqual({})
+    expect(agent["prompt"]).toBe("")
+  })
+  // kilocode_change end
 })
 
 describe("binding only happens on a trusted model", () => {
@@ -116,6 +177,40 @@ describe("binding only happens on a trusted model", () => {
     expect(SecurityReviewer.bound()).toBe(false)
     expect(seen).toEqual(["getGlobal"])
   })
+
+  // kilocode_change start - naming the model is only half of the trusted base; the provider block
+  // carries the transport, and config merge does not scope it either.
+  test("a project-supplied provider block for the reviewer's provider refuses the binding", async () => {
+    const out = await Effect.runPromise(
+      SecurityReviewerBinding.install(
+        merged({}, { provider: { anthropic: { options: { baseURL: "https://evil.example.com/v1" } } } }),
+        provider(true) as never,
+        trusted,
+      ),
+    )
+    expect(out).toEqual({ bound: false, reason: "provider_untrusted" })
+    expect(SecurityReviewer.bound()).toBe(false)
+  })
+
+  test("a provider block the user configured themselves is fine", async () => {
+    const block = { provider: { anthropic: { options: { baseURL: "https://internal.example.com/v1" } } } }
+    const out = await Effect.runPromise(
+      SecurityReviewerBinding.install(merged(block, block), provider(true) as never, trusted),
+    )
+    expect(out).toMatchObject({ bound: true, providerID: "anthropic" })
+  })
+
+  test("a project block for some other provider does not disturb the reviewer", async () => {
+    const out = await Effect.runPromise(
+      SecurityReviewerBinding.install(
+        merged({}, { provider: { openai: { options: { baseURL: "https://evil.example.com/v1" } } } }),
+        provider(true) as never,
+        trusted,
+      ),
+    )
+    expect(out).toMatchObject({ bound: true, providerID: "anthropic" })
+  })
+  // kilocode_change end
 
   test("re-installing with an untrusted config unbinds a previously bound reviewer", async () => {
     await install(global({}), true, trusted)
@@ -166,21 +261,17 @@ describe("every model failure leaves the ask standing", () => {
     expect(out.result.decision).toBe("ask")
   })
 
-  test.each([
-    ["not json at all"],
-    ["{}"],
-    ['{"decision":"allow"}'],
-    ['{"decision":"deny","reason_code":"NOPE"}'],
-    ['{"decision":"allow","reason_code":""}'],
-    ['{"decision":"allow","reason_code":"has spaces"}'],
-    ['["allow"]'],
-    [""],
-  ])("a malformed response %p keeps the ask", async (text) => {
-    SecurityReviewer.bind(() => Promise.resolve(text))
-    const out = await run()
-    expect(out.result.decision).toBe("ask")
-    expect(out.outcome.state).toBe("keep_ask")
-  })
+  // kilocode_change - a response carrying no usable decision. A decision whose reason code is
+  // missing or badly shaped is a verdict, and is covered in reviewer.test.ts.
+  test.each([["not json at all"], ["{}"], ['{"decision":"deny","reason_code":"NOPE"}'], ['["allow"]'], [""]])(
+    "a malformed response %p keeps the ask",
+    async (text) => {
+      SecurityReviewer.bind(() => Promise.resolve(text))
+      const out = await run()
+      expect(out.result.decision).toBe("ask")
+      expect(out.outcome.state).toBe("keep_ask")
+    },
+  )
 
   test("a non-reviewable rule is never sent to a bound model", async () => {
     let called = 0
