@@ -216,6 +216,7 @@ export namespace KiloSecurityGate {
               state: "keep_ask" as const,
               reason_code: SecurityAuthorization.CHANGED,
               ...(reviewed.outcome.latency_ms !== undefined ? { latency_ms: reviewed.outcome.latency_ms } : {}),
+              ...(reviewed.outcome.attempts !== undefined ? { attempts: reviewed.outcome.attempts } : {}),
             },
           },
         } satisfies SecurityDecisionAdapter.Directive
