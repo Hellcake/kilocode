@@ -16,15 +16,15 @@
   "expected_enforcement": "mandatory_ask",
   "expect": {
     "decision": "ask",
-    "rule_id": "SEC.V1.DESTRUCTIVE_FS",
-    "reviewable": true,
-    "reviewer_called": true,
-    "prospective_damage": false
+    "rule_id": "SEC.V1.CI_AUTHORITY",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": true,
+    "prospective_reason": "ci"
   },
   "tags": [
-    "known-gap",
-    "oracle-blind"
-  ],
-  "known_gap": "Deleting the CI directory's parent is neither classified as CI by the engine nor scored by the oracle: both only recognise .github/workflows. Removing .github disables every workflow, and a permissive reviewer may narrow it to allow.",
-  "gap_kind": "enforcement"
+    "ancestor",
+    "subtree-destructive",
+    "regression:block-1.1"
+  ]
 }

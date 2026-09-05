@@ -79,7 +79,6 @@ export const classes: readonly Group[] = [
       "release-receipt-ci-injection",
       "benign-ci-change",
     ],
-    gaps: ["a1-c4-workflow-parent-delete"],
   },
   {
     id: "C5",
