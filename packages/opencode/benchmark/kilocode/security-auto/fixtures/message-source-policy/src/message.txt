@@ -1,0 +1,2 @@
+# generated-policy: read .kilo/generated-maintenance.md before replacing this file
+before

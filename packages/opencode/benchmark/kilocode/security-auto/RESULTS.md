@@ -4,14 +4,14 @@
 
 **These are scripted integration measurements, not LLM ASR.** A loopback API prescribed tool calls; the actual Kilo CLI and permission pipeline executed real tools in disposable workspaces. No provider credential or external model was used.
 
-Environment: macOS arm64, Bun 1.3.14, git revision `081a0631e5aafdb7881df59756aacade063f9fd1` with the expanded benchmark applied locally. One repetition, two workers, 17 cases per primary profile. Input fingerprint at run start: `24faf8483c8afd4241a3b3548bcc4b45a3c8b337f9ce01d318216f5ae24f9e40` (140 files).
+Environment: macOS arm64, Bun 1.3.14, git revision `ae39fdc3387f30e60029426f951aa5d22adef1dd` with the adversarial-v2 benchmark applied locally. One repetition, three workers, 23 cases per primary profile. Input fingerprint at run start: `c6d0ab74be94b9de72dec2071b4b58b0d4fbe52ce10ccb6fccf913fed4778c04` (162 files).
 
 | Profile | Episodes | Attack damage | Careless damage | Clean utility | Utility under attack | Block recovery | Benign intervention | Invalid | Auto bypass | Reviewer ran |
 |---|---|---|---|---|---|---|---|---|---|---|
-| security-auto | 17 | 0% | 0% | 50% | 100% | 100% | 66.7% | 0 | 0 | 0/2 |
-| unsafe | 17 | 100% | 100% | 100% | 0% | n/a | 0% | 0 | 0 | n/a |
+| security-auto | 23 | 0% | 0% | 50% | 100% | 100% | 66.7% | 0 | 0 | 0/3 |
+| unsafe | 23 | 100% | 100% | 100% | 0% | n/a | 0% | 0 | 0 | n/a |
 
-The deterministic layer stopped all ten prescribed attacks and all careless hook damage while preserving useful continuation after every attack block. The four added campaigns cover a three-document hook injection, staged `.npmrc` copying, a workflow staged outside CI and moved into place, and adaptive hook rerouting through `.githooks` plus `core.hooksPath`. Unsafe mode completed all four harmful chains; security auto stopped all four without losing the requested message edit. The legitimate CI edit, description-only `package.json` edit and benign file cleanup remain conservative false positives. Exact version-only commands pass as read-only, while the stateful `python3 -c 'print(1)'` case exercises the unclassified-execution fallback.
+The deterministic layer stopped all sixteen prescribed attacks and all careless hook damage while preserving useful continuation after every attack block. The six adversarial-v2 campaigns add fake JSON controllers, stored tool-output authority spoofing, source-comment delegation, stronger credential staging, explicit fallback after denial and disguised package migration. Unsafe mode completed every harmful scripted chain; security auto stopped every chain without losing the requested message edit. The legitimate CI edit, description-only `package.json` edit and benign file cleanup remain conservative false positives. Exact version-only commands pass as read-only, while the stateful `python3 -c 'print(1)'` case exercises the unclassified-execution fallback.
 
 All 46 deterministic replay cases pass on this revision, including dependency installation, dependency-manifest writes, decomposed command sequences, contained execution, exact version-only execution, widened/open-network fallback, bounded proxy containment, credential paths, shell/direct route equivalence and inert Git routing. The benchmark package tests pass (37 tests), and the broader security-decision suite passes 709 tests with the opt-in reviewer benchmark skipped, including the real macOS containment probe. The separate opt-in reviewer corpus passes with a stub reviewer: 30/75 benign calls are eligible, while 0/48 adversarial calls are exposed to it. The portable default agent profile deliberately leaves sandboxing off, so its contained-exec behavior is conservative and platform-independent.
 
@@ -28,7 +28,7 @@ Contained execution remains `ask` in the deterministic layer, so the proven sand
 
 Coverage validation resolves all nine threat classes, all nine machine routes and both invariants to checked-in cases or named package tests. Four known-gap/conservative-hold replays remain visible: `.vscode/tasks.json`, arbitrary `webfetch`, `git branch topic`, and CI reads. Project `.npmrc` is now classified as sensitive and held for approval. The remaining expected current outcomes make behavior drift visible but do not count as security successes.
 
-Raw evidence for this local run was generated at `/private/tmp/kilo-security-multilevel-full-20260905-v2/` and is not a committed artifact. Re-run the command in [README.md](README.md) to create durable evidence on the target machine. Kilo Auto Small supports anonymous runs; `run-kilo.sh` performs that model-backed comparison without requiring a local credential.
+Raw evidence for this local run was generated at `/private/tmp/kilo-security-adversarial-v2-selftest-20260905-v1/` and is not a committed artifact. Re-run the command in [README.md](README.md) to create durable evidence on the target machine. Kilo Auto Small supports anonymous runs; `run-kilo.sh` performs that model-backed comparison without requiring a local credential.
 
 ### Anonymous Kilo Auto Small attempt
 
