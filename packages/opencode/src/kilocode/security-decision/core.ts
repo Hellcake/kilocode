@@ -72,13 +72,25 @@ export namespace SecurityDecision {
     "yarn",
   ])
 
-  const VERSION_FLAGS = new Set(["--version", "-V", "version"])
+  const VERSION_FLAGS = new Set(["--version", "-V"])
+
+  /**
+   * Tools whose bare `version` word is a subcommand that only prints.
+   *
+   * A bare `version` is not a flag, and what it means belongs to the tool rather than to the word:
+   * `npm version` rewrites `package.json` and creates a tag and a commit, `make version` runs a
+   * target out of the Makefile, and for a tool that does not dispatch on its first word — `python`,
+   * `node`, `java` — it is an operand naming a file to execute. So it is admitted per tool, like
+   * every other verb allowlist here, instead of being treated as a property of the spelling.
+   */
+  const VERSION_SUBCOMMAND = new Set(["cargo", "docker", "go", "kubectl", "terraform"])
 
   function versionOnly(unit: SecurityDecisionTypes.ExecCommandFact) {
     const name = unit.executable
     if (!name || !VERSION_TOOLS.has(name)) return false
     const argv = unit.argv
-    return argv !== undefined && argv.length === 2 && VERSION_FLAGS.has(argv[1]!)
+    if (argv === undefined || argv.length !== 2) return false
+    return VERSION_FLAGS.has(argv[1]!) || (argv[1] === "version" && VERSION_SUBCOMMAND.has(name))
   }
 
   /**
@@ -341,6 +353,10 @@ export namespace SecurityDecision {
     const name = unit.executable
     if (!name) return false
     if (unit.ambient) return false
+    // Every allowlist below is written about the program a bare name resolves to. A path names a
+    // file the command line picked instead, and an assignment moves the resolution itself, so in
+    // both cases the name is a spelling rather than an identity and proves nothing.
+    if (unit.pathed || unit.assigns) return false
     if (INERT.has(name)) return true
     if (versionOnly(unit)) return true
     // Without the parsed command line there is nothing to prove anything against.
@@ -756,6 +772,26 @@ export namespace SecurityDecision {
     return decision === "deny" ? 3 : decision === "ask" ? 2 : decision === "allow" ? 1 : 0
   }
 
+  /**
+   * Where a rule sits in the aggregation order.
+   *
+   * Strictness alone is not a total order over the catalog: most rules are `ask`, and among asks a
+   * *non-reviewable* one is stricter than a reviewable one, because only the first is guaranteed to
+   * reach a human. Folding facts with `strictness` alone therefore let the first ask encountered
+   * win, so `rm build/out.js ~/.ssh/id_rsa` was reviewable while the same two targets in the other
+   * order were not. Reviewability is part of the rank, and equal ranks fall back to the rule id, so
+   * the outcome is a function of the *set* of facts rather than of their order.
+   */
+  function precedence(rule: R.Entry) {
+    return strictness(rule.decision) * 2 + (rule.reviewable ? 0 : 1)
+  }
+
+  function stronger(candidate: R.Entry, current: R.Entry) {
+    const left = precedence(candidate)
+    const right = precedence(current)
+    return left === right ? candidate.id < current.id : left > right
+  }
+
   export function decide(input: SecurityDecisionTypes.Input): SecurityDecisionTypes.Result {
     const rule = evaluate(input)
     // The soft-path deny is only available against untrusted authority, and never against an
@@ -790,17 +826,16 @@ export namespace SecurityDecision {
     // A fetch of an external package is decided before any path rule: the command has no file
     // effect the scan can see, and its target is a name rather than a path.
     const ambient = exec && units(exec).some((unit) => unit.ambient)
-    let winner: R.Entry = exec && units(exec).some(installs)
-      ? R.DEPENDENCY_INSTALL
-      : exec && units(exec).some(steers)
-        ? R.HOST_CONTROL
-        : exec && units(exec).some(mutatesRepo)
-          ? R.REPO_MUTATION
-          : R.NO_OPINION
-    for (const fact of input.action.paths) {
-      const rule = target(input, fact)
-      if (strictness(rule.decision) > strictness(winner.decision)) winner = rule
+    let winner: R.Entry = R.NO_OPINION
+    const consider = (rule: R.Entry) => {
+      if (stronger(rule, winner)) winner = rule
     }
+    if (exec) {
+      if (units(exec).some(installs)) consider(R.DEPENDENCY_INSTALL)
+      if (units(exec).some(steers)) consider(R.HOST_CONTROL)
+      if (units(exec).some(mutatesRepo)) consider(R.REPO_MUTATION)
+    }
+    for (const fact of input.action.paths) consider(target(input, fact))
     // A reviewable path ask must not make inherited credentials reviewable as a side effect.
     if (ambient && winner.decision !== "deny" && (winner.decision === "pass" || winner.reviewable))
       return R.AMBIENT_ENVIRONMENT

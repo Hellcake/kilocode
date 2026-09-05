@@ -124,6 +124,12 @@ export namespace SecurityDecisionAdapter {
   function classify(pattern: string, workspace: string, region: SecurityManifest.Region = "other"): T.PathFact {
     if (!pattern || pattern === "*") return { path: pattern, inWorkspace: true, class: "unknown" }
     const raw = posix(pattern)
+    // `~` is the home directory whichever shell expands it, so an unexpanded token must not be read
+    // as a workspace-relative name: `tree ~/.ssh` and `tree /Users/me/.ssh` are the same action.
+    if (raw === "~" || raw.startsWith("~/")) {
+      const tail = path.posix.normalize(raw.slice(2))
+      return { path: raw, inWorkspace: false, class: raw === "~" ? "ordinary" : pathClass(tail) }
+    }
     const normalized = path.posix.normalize(raw)
     const absolute = path.posix.isAbsolute(normalized)
     const relative = absolute ? path.posix.relative(posix(workspace), normalized) : normalized
@@ -167,35 +173,51 @@ export namespace SecurityDecisionAdapter {
   /** Key and certificate stores, by extension. */
   const KEYSTORES = [".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"]
 
+  /**
+   * Path classes are matched case-insensitively and with the directory itself included.
+   *
+   * Both halves close a spelling bypass rather than widening a class. `cp evil .git/hooks` writes
+   * exactly what `cp evil .git/hooks/x` writes, so a pattern anchored on a trailing slash missed
+   * every destination-shaped route into a protected directory; and on a case-insensitive filesystem
+   * `.GIT/hooks/pre-commit` *is* the hook, so a case-sensitive match was a one-character bypass.
+   * Over-matching a differently-cased directory on a case-sensitive filesystem can only tighten.
+   */
   function pathClass(target: string): T.PathClass {
     const base = path.posix.basename(target)
-    if (/(^|\/)\.git\/hooks\//.test(target)) return "git_hook"
+    // Manifest names are matched exactly (`Cargo.toml`); credential and key names are matched
+    // case-folded, because those are the ones a spelling change is used to slip past.
+    const lower = base.toLowerCase()
+    if (/(^|\/)\.git\/hooks(\/|$)/i.test(target)) return "git_hook"
     // Control plane: hook redirection, filter drivers and direnv all install code that later runs.
     // `.husky` and `.githooks` are where `core.hooksPath` points in a modern repository: a write
     // there installs a hook just as a write to `.git/hooks` does. They ask rather than deny, because
     // unlike `.git/hooks` these files are committed and edited by hand.
     if (
-      /(^|\/)\.git\/config$/.test(target) ||
-      /(^|\/)\.git\/info\/attributes$/.test(target) ||
-      /(^|\/)\.husky\//.test(target) ||
-      /(^|\/)\.githooks\//.test(target) ||
-      base === ".gitattributes" ||
-      base === ".envrc"
+      /(^|\/)\.git\/config$/i.test(target) ||
+      /(^|\/)\.git\/info\/attributes$/i.test(target) ||
+      /(^|\/)\.husky(\/|$)/i.test(target) ||
+      /(^|\/)\.githooks(\/|$)/i.test(target) ||
+      lower === ".gitattributes" ||
+      lower === ".envrc"
     )
       return "control_plane"
-    if (/(^|\/)\.github\/workflows\//.test(target) || base === ".gitlab-ci.yml" || /(^|\/)\.circleci\//.test(target))
+    if (
+      /(^|\/)\.github\/workflows(\/|$)/i.test(target) ||
+      lower === ".gitlab-ci.yml" ||
+      /(^|\/)\.circleci(\/|$)/i.test(target)
+    )
       return "ci"
     if (SecurityManifest.is(base)) return "package_manifest"
     if (
-      base === ".env" ||
-      base.startsWith(".env.") ||
-      CREDENTIALS.has(base) ||
-      KEYSTORES.some((extension) => base.endsWith(extension)) ||
-      /(^|\/)\.ssh\//.test(target) ||
-      /(^|\/)\.aws\//.test(target) ||
-      /(^|\/)\.kube\//.test(target) ||
-      /(^|\/)\.docker\//.test(target) ||
-      /(^|\/)\.gnupg\//.test(target)
+      lower === ".env" ||
+      lower.startsWith(".env.") ||
+      CREDENTIALS.has(lower) ||
+      KEYSTORES.some((extension) => lower.endsWith(extension)) ||
+      /(^|\/)\.ssh(\/|$)/i.test(target) ||
+      /(^|\/)\.aws(\/|$)/i.test(target) ||
+      /(^|\/)\.kube(\/|$)/i.test(target) ||
+      /(^|\/)\.docker(\/|$)/i.test(target) ||
+      /(^|\/)\.gnupg(\/|$)/i.test(target)
     )
       return "sensitive"
     return "ordinary"
@@ -227,7 +249,14 @@ export namespace SecurityDecisionAdapter {
 
   function unit(item: unknown): Normalized<T.ExecCommandFact> {
     if (!item || typeof item !== "object") return { value: {}, truncated: true }
-    const value = item as { executable?: unknown; argv?: unknown; classified?: unknown; ambient?: unknown }
+    const value = item as {
+      executable?: unknown
+      argv?: unknown
+      classified?: unknown
+      ambient?: unknown
+      pathed?: unknown
+      assigns?: unknown
+    }
     const argv = Array.isArray(value.argv)
       ? value.argv.filter((token): token is string => typeof token === "string")
       : []
@@ -237,11 +266,15 @@ export namespace SecurityDecisionAdapter {
         argv,
         classified: value.classified === true,
         ambient: value.ambient === true,
+        pathed: value.pathed === true,
+        assigns: value.assigns === true,
       },
       truncated:
         (value.executable !== undefined && typeof value.executable !== "string") ||
         (value.classified !== undefined && typeof value.classified !== "boolean") ||
         (value.ambient !== undefined && typeof value.ambient !== "boolean") ||
+        (value.pathed !== undefined && typeof value.pathed !== "boolean") ||
+        (value.assigns !== undefined && typeof value.assigns !== "boolean") ||
         (value.argv !== undefined && !Array.isArray(value.argv)) ||
         (Array.isArray(value.argv) && argv.length !== value.argv.length),
     }
@@ -260,6 +293,8 @@ export namespace SecurityDecisionAdapter {
       argv?: unknown
       classified?: unknown
       ambient?: unknown
+      pathed?: unknown
+      assigns?: unknown
       decomposable?: unknown
       commands?: unknown
     }
@@ -272,6 +307,8 @@ export namespace SecurityDecisionAdapter {
         composed: value.composed === true,
         classified: value.classified === true,
         ambient: value.ambient === true,
+        pathed: value.pathed === true,
+        assigns: value.assigns === true,
         decomposable: value.decomposable === true,
         ...(commands ? { commands: commands.map((item) => item.value) } : {}),
         argv,
@@ -284,6 +321,8 @@ export namespace SecurityDecisionAdapter {
         (value.executable !== undefined && typeof value.executable !== "string") ||
         (value.classified !== undefined && typeof value.classified !== "boolean") ||
         (value.ambient !== undefined && typeof value.ambient !== "boolean") ||
+        (value.pathed !== undefined && typeof value.pathed !== "boolean") ||
+        (value.assigns !== undefined && typeof value.assigns !== "boolean") ||
         (value.argv !== undefined && !Array.isArray(value.argv)) ||
         (Array.isArray(value.argv) && argv.length !== value.argv.length) ||
         (value.commands !== undefined && !Array.isArray(value.commands)) ||
@@ -429,12 +468,18 @@ export namespace SecurityDecisionAdapter {
       const labeled = unit.executable !== undefined && LABEL_TOOLS.has(unit.executable)
       // The executable's own name is not one of its arguments.
       for (const token of (unit.argv ?? []).slice(1)) {
-        if (token.length === 0 || token.startsWith("-") || token.includes("://")) continue
+        if (token.length === 0 || token.includes("://")) continue
+        // A path-valued option carries its target inside the token (`--output=/etc/cron.d/job`), so
+        // skipping every token that starts with `-` skipped the path along with the option name.
+        const flag = token.startsWith("-") ? token.indexOf("=") : -1
+        if (token.startsWith("-") && flag <= 0) continue
+        const value = flag > 0 ? token.slice(flag + 1) : token
+        if (value.length === 0 || value.includes("://")) continue
         // `@file` is how curl and friends spell "read this file", and `key=value` is how `dd` and
         // its relatives spell an operand: in both the reference is the tail, not the whole token.
-        const operand = /^[A-Za-z_][A-Za-z0-9_]*=(.+)$/.exec(token)
+        const operand = /^[A-Za-z_][A-Za-z0-9_]*=(.+)$/.exec(value)
         const named =
-          (labeled ? label(token) : undefined) ?? (token.startsWith("@") ? token.slice(1) : (operand?.[1] ?? token))
+          (labeled ? label(value) : undefined) ?? (value.startsWith("@") ? value.slice(1) : (operand?.[1] ?? value))
         const fact = classify(named, workspace)
         if (fact.class === "unknown") continue
         if (fact.class === "ordinary" && fact.inWorkspace) continue

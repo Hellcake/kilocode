@@ -698,8 +698,18 @@ describe("a device target is never a reviewer's call", () => {
     expect(out.reviewable).toBe(true)
   })
 
-  test("a flag that carries a path is still a flag", () => {
-    expect(single("npm test --prefix=/tmp/x").rule_id).toBe("SEC.V1.CONTAINED_EXEC")
+  // kilocode_change - the value a path-valued option carries is a path. `npm test --prefix=/tmp/x`
+  // runs another package's scripts from outside the workspace, so it is a boundary crossing rather
+  // than a contained command a reviewer could weigh.
+  test("a flag that carries a path carries a path", () => {
+    const out = single("npm test --prefix=/tmp/x")
+    expect(out.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(out.decision).toBe("ask")
+    expect(out.reviewable).toBe(false)
+  })
+
+  test("a flag whose value stays inside the workspace still reaches the reviewer", () => {
+    expect(single("npm test --prefix=./sub").rule_id).toBe("SEC.V1.CONTAINED_EXEC")
   })
 })
 

@@ -44,6 +44,16 @@ export namespace SecurityDecisionTypes {
     classified?: boolean
     /** Whether the command can expose values inherited from the process environment. */
     ambient?: boolean
+    /**
+     * Whether the executable was named by a path instead of resolved on `PATH`. The name then
+     * describes a file the command line chose, so it cannot buy a name-based fast path.
+     */
+    pathed?: boolean
+    /**
+     * Whether the run rewrites the environment its own names resolve in — a prefix assignment, an
+     * `export`, an alias or a function definition. A bare name proves nothing once this holds.
+     */
+    assigns?: boolean
   }>
 
   export type ExecFact = Readonly<{
@@ -65,6 +75,10 @@ export namespace SecurityDecisionTypes {
     decomposable?: boolean
     /** The recovered commands, in source order. Present only when the scan could name them all. */
     commands?: readonly ExecCommandFact[]
+    /** See `ExecCommandFact.pathed`. */
+    pathed?: boolean
+    /** See `ExecCommandFact.assigns`. */
+    assigns?: boolean
     class: "known" | "unknown"
   }>
 
