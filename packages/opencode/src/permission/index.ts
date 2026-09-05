@@ -53,6 +53,7 @@ export const ReplyInput = PermissionV1.ReplyInput
 export type ReplyInput = PermissionV1.ReplyInput
 // Kilo extends upstream's AskInput with an optional hardRuleset (consumed by drain + session/prompt)
 export type AskInput = PermissionV1.AskInput & {
+  source?: "builtin" | "mcp" | "unknown"
   hardRuleset?: PermissionV1.Ruleset
   /** Live containment facts for the security decision layer; never published to clients. */
   containment?: SecurityDecisionTypes.Containment
@@ -236,7 +237,7 @@ const layer = Layer.effect(
     const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
       const { approved, pending } = yield* InstanceState.get(state)
       // kilocode_change start
-      const { ruleset, hardRuleset, containment, containmentLive, authorization, agent, blocked, audit, ...request } =
+      const { ruleset, hardRuleset, containment, containmentLive, authorization, agent, blocked, audit, source, ...request } =
         input
       const s = yield* InstanceState.get(state)
       const local = s.session[request.sessionID] ?? []
@@ -322,6 +323,7 @@ const layer = Layer.effect(
       const security = SecurityDecisionAdapter.enabled()
         ? yield* KiloSecurityGate.evaluate({
             config,
+            source,
             workspace: (yield* InstanceState.context).worktree,
             permission: request.permission,
             patterns: request.patterns,

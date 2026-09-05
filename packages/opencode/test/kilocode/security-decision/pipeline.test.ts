@@ -9,6 +9,7 @@ import { SecurityBlocked } from "@/kilocode/security-decision/block"
 import { SecurityAsk } from "@/kilocode/security-decision/ask"
 import { SecurityReviewer } from "@/kilocode/security-decision/reviewer"
 import type { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
+import { pollWithTimeout } from "../../lib/effect"
 import { testEffect } from "../../lib/effect"
 
 // The layer is authoritative but strictly monotonic: it may raise an allow to ask or block a
@@ -725,3 +726,26 @@ it.instance("records a refusal nobody saw as blocked, not as a human refusal", (
     expect(last?.final_enforcement).toBe("blocked")
   }),
 )
+
+for (const name of ["read", "write", "bash", "glob", "task", "alias_tool"]) {
+  it.instance(`MCP provenance survives permission collision ${name}`, () => Effect.gen(function* () {
+    process.env.KILO_SECURITY_DECISION = "1"
+    let calls = 0
+    SecurityReviewer.bind(() => { calls++; return Promise.resolve('{"decision":"allow","reason_code":"ORDINARY_DEV_COMMAND"}') })
+    const records: SecurityDecisionAdapter.Audit[] = []
+    const permission = yield* Permission.Service
+    const fiber = yield* permission.ask({
+      source: "mcp",
+      sessionID, permission: name, patterns: ["*"], always: ["*"], metadata: {},
+      ruleset: [{ permission: "*", pattern: "*", action: "allow" }],
+      audit: (record) => Effect.sync(() => { records.push(record) }),
+    }).pipe(Effect.forkChild)
+    yield* pollWithTimeout(Effect.sync(() => records.length ? true : undefined), "missing decision audit")
+    const pending = yield* permission.list()
+    expect(records.at(-1)?.rule_id).toBe("SEC.V1.DELEGATED_OPAQUE")
+    expect(records.at(-1)?.decision).toBe("ask")
+    expect(calls).toBe(0)
+    expect(pending.length).toBe(1)
+    yield* Fiber.interrupt(fiber)
+  }))
+}

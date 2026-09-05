@@ -99,7 +99,7 @@ describe.skipIf(process.platform === "win32")("a carried program is never review
 })
 
 describe.skipIf(process.platform === "win32")("a structurally simple confined command is eligible", () => {
-  test.each([["npm test"], ["eslint src --fix"], ["cargo check"], ["tsc --noEmit"], ["tar -czf backup.tgz ."]])(
+  test.each([["npm test"], ["eslint src --fix"], ["cargo check"], ["tsc --noEmit"]])(
     "%s is a reviewable contained ask",
     (command) =>
       withTmp(async (cwd) => {

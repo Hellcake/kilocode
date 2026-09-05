@@ -6,6 +6,8 @@ import path from "path"
 import * as CrossSpawnSpawner from "@opencode-ai/core/cross-spawn-spawner"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { ShellPermission } from "@/tool/shell"
+import { KiloSecurityGate } from "@/kilocode/security-decision/gate"
+import { SecurityReviewer } from "@/kilocode/security-decision/reviewer"
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import type { Permission } from "@/permission"
 import { SessionID, MessageID } from "@/session/schema"
@@ -536,3 +538,102 @@ describe.skipIf(process.platform === "win32")("escalation is settled before the 
     }),
   )
 })
+
+
+describe("freeze protected effects", () => {
+  const destinations = [
+    ".git/modules/sub/hooks/pre-commit", ".git/index", ".git/refs/heads/main",
+    "./tmp/../.git/modules/sub/hooks/pre-commit", ".github/workflows/ci.yml",
+    ".github/actions/local/action.yml", ".gitlab-ci.yml", ".circleci/config.yml",
+    ".buildkite/pipeline.yml", "Jenkinsfile", ".drone.yml", "bitbucket-pipelines.yml", "package.json",
+  ]
+  for (const target of destinations) {
+    test(`protected destination ${target}: direct/copy/redirect/utility and permissive reviewer`, withTmp(async (cwd) => {
+      const ctx: SecurityDecisionAdapter.Context = {
+        workspace: cwd, effective: "allow", humanOnly: false,
+        floor: { action: "allow", authority: "untrusted", conflict: false },
+        containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      }
+      const direct = SecurityDecisionAdapter.evaluate({ permission: "write", patterns: [target], sessionID: "ses_freeze" }, ctx)
+      expect(direct.decision).toBe("ask")
+      expect(direct.reviewable).toBe(false)
+      const commands = [
+        `cp evil.sh ${target}`, `mv temp ${target}`, `echo evil > ${target}`,
+        `sed -i 's/a/b/' ${target}`, `truncate -s 0 ${target}`, `tee ${target}`,
+        `dd if=temp of=${target}`, `sort temp -o ${target}`, `install temp ${target}`,
+        `rsync temp ${target}`, `tar -xf temp.tar -C ${target}`, `unzip temp.zip -d ${target}`,
+      ]
+      const previous = process.env.KILO_SECURITY_DECISION
+      process.env.KILO_SECURITY_DECISION = "1"
+      let calls = 0
+      SecurityReviewer.bind(() => { calls++; return Promise.resolve('{"decision":"allow","reason_code":"ORDINARY_DEV_COMMAND"}') })
+      try {
+        for (const command of commands) {
+          const securityFacts = await facts(command, cwd)
+          const out = await Effect.runPromise(KiloSecurityGate.evaluate({
+            permission: "bash", patterns: [command], metadata: { securityFacts }, sessionID: "ses_freeze",
+            workspace: cwd, resolved: [{ pattern: command, action: "allow" }], humanOnly: false,
+            config: { getGlobal: () => Effect.succeed({ permission: {} } as never) }, containment: ctx.containment,
+          }))
+          expect({ command, decision: out?.decision, reviewable: out?.reviewable, calls }).toEqual({ command, decision: direct.decision, reviewable: direct.reviewable, calls: 0 })
+        }
+      } finally {
+        SecurityReviewer.reset()
+        if (previous === undefined) delete process.env.KILO_SECURITY_DECISION
+        else process.env.KILO_SECURITY_DECISION = previous
+      }
+    }))
+    test(`known read-only ${target}`, withTmp(async (cwd) => {
+      const out = SecurityDecisionAdapter.evaluate({ permission: "bash", patterns: [`cat ${target}`], metadata: { securityFacts: await facts(`cat ${target}`, cwd) }, sessionID: "ses_freeze" }, {
+        workspace: cwd, effective: "allow", humanOnly: false, floor: { action: "allow", authority: "untrusted", conflict: false },
+        containment: { sandbox: "unknown", network: "allow", destinations: [], escalated: false },
+      })
+      expect(out.decision).toBe("pass")
+    }))
+  }
+  test.each(["unknown", "operational"] as const)("independent exec contributor under %s containment", (sandbox) => withTmp(async (cwd) => {
+    for (const executable of ["./scripts/deploy.sh", "sh -c true"]) {
+      for (const command of [executable, `rm -rf build && ${executable}`, `${executable} && rm -rf build`]) {
+        const out = SecurityDecisionAdapter.evaluate({ permission: "bash", patterns: [command], metadata: { securityFacts: await facts(command, cwd) }, sessionID: "ses_freeze" }, {
+          workspace: cwd, effective: "allow", humanOnly: false, floor: { action: "allow", authority: "untrusted", conflict: false },
+          containment: { sandbox, network: "deny", destinations: [], escalated: false },
+        })
+        expect({ command, decision: out.decision, reviewable: out.reviewable }).toEqual({ command, decision: "ask", reviewable: false })
+      }
+    }
+  })())
+  test.each(["cat", "truncate -s 0", "rm -rf"])("named home %s stays unknown", (utility) => withTmp(async (cwd) => {
+    for (const target of ["~root/file", "~alice/file"]) {
+      const command = `${utility} ${target}`
+      const out = SecurityDecisionAdapter.evaluate({ permission: "bash", patterns: [command], metadata: { securityFacts: await facts(command, cwd) }, sessionID: "ses_freeze" }, {
+        workspace: cwd, effective: "allow", humanOnly: false, floor: { action: "allow", authority: "untrusted", conflict: false },
+        containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      })
+      expect(out.decision).toBe("ask")
+      expect(out.reviewable).toBe(false)
+    }
+  })())
+})
+
+
+test("unclassified archive extraction syntax never reaches a permissive reviewer", withTmp(async (cwd) => {
+  const previous = process.env.KILO_SECURITY_DECISION
+  process.env.KILO_SECURITY_DECISION = "1"
+  let calls = 0
+  SecurityReviewer.bind(() => { calls++; return Promise.resolve('{"decision":"allow","reason_code":"ORDINARY_DEV_COMMAND"}') })
+  try {
+    for (const command of ["tar -xvfarchive.tar", "tar --get -f archive.tar", "tar xf archive.tar", "tar -xf archive.tar", "tar -czf backup.tgz ."]) {
+      const out = await Effect.runPromise(KiloSecurityGate.evaluate({
+        permission: "bash", patterns: [command], metadata: { securityFacts: await facts(command, cwd) }, sessionID: "ses_archive",
+        workspace: cwd, resolved: [{ pattern: command, action: "allow" }], humanOnly: false,
+        config: { getGlobal: () => Effect.succeed({ permission: {} } as never) },
+        containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
+      }))
+      expect({ command, decision: out?.decision, reviewable: out?.reviewable, calls }).toEqual({ command, decision: "ask", reviewable: false, calls: 0 })
+    }
+  } finally {
+    SecurityReviewer.reset()
+    if (previous === undefined) delete process.env.KILO_SECURITY_DECISION
+    else process.env.KILO_SECURITY_DECISION = previous
+  }
+}))

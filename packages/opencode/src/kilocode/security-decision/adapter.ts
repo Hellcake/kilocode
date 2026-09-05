@@ -15,46 +15,11 @@ import type { SecurityDecisionTypes as T } from "./types"
  * reach this function, and nothing it produces echoes a command, path or diff.
  */
 export namespace SecurityDecisionAdapter {
-  /** Built-in permission names. Anything else asking for `*` is an opaque delegated (MCP) action. */
-  const KNOWN = new Set([
-    "agent_manager",
-    "bash",
-    "board_post",
-    "board_read",
-    "browser_open",
-    "doom_loop",
-    "edit",
-    "external_directory",
-    "glob",
-    "grep",
-    "interactive_terminal",
-    "lsp",
-    "notebook_edit",
-    "notebook_execute",
-    "notebook_read",
-    "plan_enter",
-    "plan_exit",
-    "question",
-    "read",
-    "recall",
-    "repo_clone",
-    "repo_overview",
-    "sandbox_escalation",
-    "semantic_search",
-    "skill",
-    "suggest",
-    "task",
-    "todowrite",
-    "webfetch",
-    "websearch",
-    "workflow_tool_approval",
-    "write",
-  ])
-
   const READS = new Set(["read", "grep", "glob", "notebook_read", "semantic_search", "repo_overview"])
   const EXECS = new Set(["bash", "interactive_terminal"])
 
   export type Request = Readonly<{
+    source?: "builtin" | "mcp" | "unknown"
     permission: string
     patterns: readonly string[]
     metadata?: Record<string, unknown>
@@ -149,6 +114,7 @@ export namespace SecurityDecisionAdapter {
   function classify(pattern: string, workspace: string, region: SecurityManifest.Region = "other"): T.PathFact {
     if (!pattern || pattern === "*") return { path: pattern, inWorkspace: true, class: "unknown" }
     const raw = posix(pattern)
+    if (/^~[^/]+\//.test(raw)) return { path: raw, inWorkspace: false, class: "unknown" }
     // `~` is the home directory whichever shell expands it, so an unexpanded token must not be read
     // as a workspace-relative name: `tree ~/.ssh` and `tree /Users/me/.ssh` are the same action.
     if (raw === "~" || raw.startsWith("~/")) {
@@ -198,6 +164,13 @@ export namespace SecurityDecisionAdapter {
   /** Key and certificate stores, by extension. */
   const KEYSTORES = [".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"]
 
+  /** CI entrypoints and executable action definitions share the same mutation authority. */
+  const CI = {
+    files: new Set([".gitlab-ci.yml", "jenkinsfile", ".drone.yml", "bitbucket-pipelines.yml"]),
+    directories: new Set([".circleci", ".buildkite"]),
+    github: new Set(["workflows", "actions"]),
+  }
+
   /**
    * Path classes are matched case-insensitively and with the directory itself included.
    *
@@ -218,20 +191,17 @@ export namespace SecurityDecisionAdapter {
     // there installs a hook just as a write to `.git/hooks` does. They ask rather than deny, because
     // unlike `.git/hooks` these files are committed and edited by hand.
     if (
-      /(^|\/)\.git\/config$/i.test(target) ||
-      /(^|\/)\.git\/info\/attributes$/i.test(target) ||
+      /(^|\/)\.git(\/|$)/i.test(target) ||
       /(^|\/)\.husky(\/|$)/i.test(target) ||
       /(^|\/)\.githooks(\/|$)/i.test(target) ||
       lower === ".gitattributes" ||
       lower === ".envrc"
     )
       return "control_plane"
-    if (
-      /(^|\/)\.github\/workflows(\/|$)/i.test(target) ||
-      lower === ".gitlab-ci.yml" ||
-      /(^|\/)\.circleci(\/|$)/i.test(target)
-    )
-      return "ci"
+    const segments = target.toLowerCase().split("/")
+    if (CI.files.has(lower) || segments.some((segment, index) =>
+      CI.directories.has(segment) || (segment === ".github" && CI.github.has(segments.at(index + 1) ?? "")),
+    )) return "ci"
     if (SecurityManifest.is(base)) return "package_manifest"
     if (
       lower === ".env" ||
@@ -488,8 +458,9 @@ export namespace SecurityDecisionAdapter {
   function argvPaths(facts: T.ExecFact | undefined, workspace: string): T.PathFact[] {
     if (!facts) return []
     const out: T.PathFact[] = []
-    const seen = new Set<string>()
     for (const unit of facts.commands && facts.commands.length > 0 ? facts.commands : [facts]) {
+      // Classified commands already carry per-target roles from the scanner.
+      if (unit.classified === true) continue
       const labeled = unit.executable !== undefined && LABEL_TOOLS.has(unit.executable)
       // The executable's own name is not one of its arguments.
       for (const token of (unit.argv ?? []).slice(1)) {
@@ -506,20 +477,19 @@ export namespace SecurityDecisionAdapter {
         const named =
           (labeled ? label(value) : undefined) ?? (value.startsWith("@") ? value.slice(1) : (operand?.[1] ?? value))
         const fact = classify(named, workspace)
-        if (fact.class === "unknown") continue
         if (fact.class === "ordinary" && fact.inWorkspace) continue
-        if (seen.has(fact.path)) continue
-        seen.add(fact.path)
-        // Reading is the least the command can be doing with a path it names.
-        out.push({ ...fact, operation: "read" })
+        // An unclassified executable does not prove read-only use of any named operand.
+        // Mutation utilities may also read these operands; over-reporting writes only tightens.
+        const mutation = new Set(["sed", "truncate", "tee", "dd", "sort", "install", "rsync", "tar", "unzip"])
+        out.push({ ...fact, operation: mutation.has(unit.executable ?? "") ? "update" : "unknown" })
       }
     }
     return out
   }
 
-  /** MCP asks arrive as an unregistered permission name with a `*` pattern and empty metadata. */
+  /** Provenance comes from trusted dispatch, never from the permission or tool name. */
   function delegated(request: Request) {
-    return !KNOWN.has(request.permission)
+    return request.source === "mcp" || request.source === "unknown"
   }
 
   function toInput(request: Request, ctx: Context): T.Input {

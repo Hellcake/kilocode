@@ -665,11 +665,13 @@ export namespace SecurityDecision {
 
     if (fact.class === "git_hook") {
       if (WRITES.has(op)) return R.GIT_HOOK_WRITE
+      if (op === "read") return R.NO_OPINION
       return R.AMBIGUOUS_OPERATION
     }
 
     // Reading the control plane is ordinary; installing into it is not.
     if (fact.class === "control_plane") {
+      if (!fact.inWorkspace) return R.SENSITIVE_BOUNDARY
       if (WRITES.has(op)) return R.CONTROL_PLANE_WRITE
       if (op === "read") return R.NO_OPINION
       return R.AMBIGUOUS_OPERATION
@@ -677,7 +679,7 @@ export namespace SecurityDecision {
 
     if (fact.class === "unknown") return R.UNKNOWN_TARGET
     if (fact.class === "sensitive" || !fact.inWorkspace) return R.SENSITIVE_BOUNDARY
-    if (fact.class === "ci") return R.CI_AUTHORITY
+    if (fact.class === "ci") return op === "read" ? R.NO_OPINION : R.CI_AUTHORITY
     // A manifest declares what the project pulls in and what runs around an install. Both are the
     // same human boundary as the install itself; the region only decides which rule names it, and an
     // undetermined region stays on the stricter side rather than falling through to an ordinary edit.
@@ -748,7 +750,9 @@ export namespace SecurityDecision {
   /** True when the unit runs a program the scan cannot see. */
   function carries(unit: SecurityDecisionTypes.ExecCommandFact) {
     const name = unit.executable
-    if (!name) return true
+    if (!name || unit.pathed) return true
+    // These utilities can mutate through options or embedded programs the scan does not model.
+    if (["sed", "truncate", "tee", "dd", "sort", "install", "rsync", "tar", "unzip"].includes(name)) return true
     if (SHELLS.has(name) || WRAPPERS.has(name) || SCRIPT_FIRST.has(name)) return true
     const argv = unit.argv ?? []
     if (argv.some((token) => CODE_FLAGS.has(token))) return true
@@ -789,7 +793,11 @@ export namespace SecurityDecision {
   function stronger(candidate: R.Entry, current: R.Entry) {
     const left = precedence(candidate)
     const right = precedence(current)
-    return left === right ? candidate.id < current.id : left > right
+    if (left !== right) return left > right
+    // Preserve a concrete explanation over an equally strict uncertainty about another operand.
+    if (candidate.id === R.AMBIGUOUS_OPERATION.id || current.id === R.AMBIGUOUS_OPERATION.id)
+      return current.id === R.AMBIGUOUS_OPERATION.id && candidate.id !== current.id
+    return candidate.id < current.id
   }
 
   export function decide(input: SecurityDecisionTypes.Input): SecurityDecisionTypes.Result {
@@ -836,14 +844,13 @@ export namespace SecurityDecision {
       if (units(exec).some(mutatesRepo)) consider(R.REPO_MUTATION)
     }
     for (const fact of input.action.paths) consider(target(input, fact))
-    // A reviewable path ask must not make inherited credentials reviewable as a side effect.
-    if (ambient && winner.decision !== "deny" && (winner.decision === "pass" || winner.reviewable))
-      return R.AMBIENT_ENVIRONMENT
-    // Only once every deterministic path rule has had its say. A complete parse is not proof of
-    // safety: unless the scan knows what this executable does to files, or the command is proven
-    // inert, the action is unclassified rather than harmless.
-    if (winner.decision === "pass" && exec && units(exec).some((unit) => unit.classified !== true && !inert(unit)))
-      return contained(input, exec) ? R.CONTAINED_EXEC : R.UNCLASSIFIED_EXEC
+    if (ambient && precedence(R.AMBIENT_ENVIRONMENT) > precedence(winner)) consider(R.AMBIENT_ENVIRONMENT)
+    // Execution is an independent contributor. Compute its reviewability before aggregation so a
+    // filesystem ask cannot hide an unclassified executable or an opaque contained invocation.
+    if (exec && units(exec).some((unit) => unit.classified !== true && !inert(unit))) {
+      const rule = contained(input, exec) ? { ...R.CONTAINED_EXEC, reviewable: eligible(exec) } : R.UNCLASSIFIED_EXEC
+      if (precedence(rule) > precedence(winner)) consider(rule)
+    }
     return winner
   }
 }

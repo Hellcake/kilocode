@@ -22,6 +22,7 @@ import { Session } from "./session"
 import { SessionProcessor } from "./processor"
 import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
+import { isBuiltin } from "@/kilocode/sandbox/network" // kilocode_change - provenance from the native registry marker
 import * as SandboxPolicy from "@/kilocode/sandbox/policy" // kilocode_change
 // kilocode_change start - live containment facts for the deterministic security decision layer
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
@@ -101,7 +102,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const restricted = yield* SandboxPolicy.networkRestricted(input.session.id) // kilocode_change
   const sandboxed = (yield* SandboxPolicy.status(input.session.id)).enabled // kilocode_change
-  const context = (args: Record<string, unknown>, options: ToolExecutionOptions, name?: string): Tool.Context => {
+  const context = (args: Record<string, unknown>, options: ToolExecutionOptions, name?: string, source: "builtin" | "mcp" | "unknown" = "builtin"): Tool.Context => {
     const extra = {
       model: input.model,
       bypassAgentCheck: input.bypassAgentCheck,
@@ -165,6 +166,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             session: input.session,
             request: {
               ...req,
+              source: source !== "builtin" ? source : (req.source ?? source), // kilocode_change - catalog children may only tighten builtin provenance
               sessionID: input.session.id,
               // kilocode_change - a retry of a call the layer already stopped this turn stays a
               // human ask; the signature is the continuation model's, over the tool call itself
@@ -260,7 +262,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       execute(args, options) {
         return run.promise(
           Effect.gen(function* () {
-            const ctx = context(args, options, item.id) // kilocode_change - name the call for the block registry
+            const ctx = context(args, options, item.id, isBuiltin(item) ? "builtin" : "unknown") // kilocode_change - name the call for the block registry
             yield* plugin.trigger(
               "tool.execute.before",
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
@@ -315,7 +317,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         return run.promise(
           Effect.gen(function* () {
             const parsed = parseListMcpResourcesArgs(args)
-            const ctx = context(toRecord(args), opts)
+            const ctx = context(toRecord(args), opts, undefined, "mcp")
             const clients = yield* mcp.clients()
             const resourceServers = Object.entries(clients)
               .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
@@ -395,7 +397,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         return run.promise(
           Effect.gen(function* () {
             const parsed = parseListMcpResourcesArgs(args)
-            const ctx = context(toRecord(args), opts)
+            const ctx = context(toRecord(args), opts, undefined, "mcp")
             const clients = yield* mcp.clients()
             const resourceServers = Object.entries(clients)
               .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
@@ -479,7 +481,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         return run.promise(
           Effect.gen(function* () {
             const parsed = parseReadMcpResourceArgs(args)
-            const ctx = context(toRecord(args), opts)
+            const ctx = context(toRecord(args), opts, undefined, "mcp")
             const clients = yield* mcp.clients()
             const client = clients[parsed.server]
             if (!client) {
@@ -549,7 +551,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     item.execute = (args, opts) =>
       run.promise(
         Effect.gen(function* () {
-          const ctx = context(args, opts)
+          const ctx = context(args, opts, key, "mcp")
           // kilocode_change start - propagate MCP App UI metadata so hosts can preload the UI resource
           const mcpAppMeta = McpApps.toolMetadata(entry, flags)
           if (mcpAppMeta) {

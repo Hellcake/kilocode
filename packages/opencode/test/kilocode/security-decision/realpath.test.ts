@@ -176,3 +176,9 @@ describe.skipIf(process.platform === "win32")("SecurityRealpath.paths", () => {
     }),
   )
 })
+
+test("named home syntax cannot be absolutized into the workspace", async () => {
+  expect(await SecurityRealpath.of("~root/file", "/tmp")).toBeUndefined()
+  expect(await SecurityRealpath.of("~alice/file", "/tmp")).toBeUndefined()
+  expect(await SecurityRealpath.of("~backup.txt", "/tmp")).toBe(path.join(await fs.realpath("/tmp"), "~backup.txt"))
+})

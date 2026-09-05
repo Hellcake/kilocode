@@ -97,12 +97,14 @@ describe("SecurityContinuation circuit breaker", () => {
     expect(attempt(seen, 5)).toBe("interrupt")
   })
 
-  test("the interrupt is reported once and the turn does not keep re-interrupting", () => {
+  test("the interrupt stays latched for subsequent blocked calls", () => {
     const seen = SecurityContinuation.state()
     attempt(seen, 1)
     attempt(seen, 2)
     expect(attempt(seen, 3)).toBe("interrupt")
-    expect(attempt(seen, 4)).toBe("continue")
+    expect(attempt(seen, 4)).toBe("interrupt")
+    SecurityContinuation.succeeded(seen)
+    expect(attempt(seen, 5)).toBe("interrupt")
   })
 
   test("thresholds are configurable", () => {

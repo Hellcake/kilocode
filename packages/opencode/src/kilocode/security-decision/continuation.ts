@@ -92,8 +92,12 @@ export namespace SecurityContinuation {
    * existing rule applies.
    */
   export function after(state: State, error: unknown, call: { tool: string; input: unknown }): Outcome | undefined {
-    if (!SecurityBlocked.is(error)) return undefined
+    if (!SecurityBlocked.is(error)) return state.interrupted ? "interrupt" : undefined
     const key = signature(call.tool, call.input)
+    if (state.interrupted) {
+      state.signatures.add(key)
+      return "interrupt"
+    }
     // The identical call is not another path, and it is settled before the breaker sees it: an
     // attempt the model already made tells us nothing new about how hard it is pushing.
     if (state.signatures.has(key)) return "stop"

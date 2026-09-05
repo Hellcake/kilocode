@@ -390,6 +390,7 @@ export const ShellPermission = Effect.gen(function* () {
     const text = ps ? expand(arg, cwd, shell) : home(unquote(arg))
     const file = text && prefix(text)
     if (!file || dynamic(file, ps)) return
+    if (/^~[^/\\]+[/\\]/.test(file)) return // kilocode_change - unresolved named home is never workspace-relative
     const next = ps ? provider(file) : file
     if (!next) return
     return yield* resolve(next, cwd, shell)

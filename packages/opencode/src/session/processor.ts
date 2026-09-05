@@ -320,14 +320,14 @@ const layer = Layer.effect(
           // The blocked call never ran, so the turn continues and the model may take another allowed
           // path. Re-issuing the identical call is not another path, and neither is a run of fresh
           // spellings of the same intent: both end the turn.
-          ctx.blocked = security !== "continue"
+          ctx.blocked ||= security !== "continue"
         } else if (
           error instanceof PermissionV1.RejectedError ||
           error instanceof Question.RejectedError ||
           error instanceof Suggestion.DismissedError
         ) {
           // kilocode_change end
-          ctx.blocked = ctx.shouldBreak
+          ctx.blocked ||= ctx.shouldBreak // kilocode_change - a stopped turn cannot be resumed by later settlements
         }
         yield* settleToolCall(toolCallID)
         return true
@@ -564,7 +564,7 @@ const layer = Layer.effect(
             yield* completeToolCall(value.id, output)
             // kilocode_change start - dismissed suggestions stop the turn after persisting normalized output
             if (output.metadata?.dismissed === true) {
-              ctx.blocked = ctx.shouldBreak
+              ctx.blocked ||= ctx.shouldBreak // kilocode_change - a stopped turn cannot be resumed by later settlements
             }
             // kilocode_change end
             return

@@ -34,6 +34,7 @@ export namespace KiloSecurityGate {
   export type Input = Readonly<{
     config: Pick<Config.Interface, "getGlobal">
     workspace: string
+    source?: "builtin" | "mcp" | "unknown"
     permission: string
     patterns: readonly string[]
     metadata?: Record<string, unknown>
@@ -108,6 +109,7 @@ export namespace KiloSecurityGate {
 
     const directive = SecurityDecisionAdapter.evaluate(
       {
+        source: input.source,
         permission: input.permission,
         patterns: input.patterns,
         metadata: input.metadata,

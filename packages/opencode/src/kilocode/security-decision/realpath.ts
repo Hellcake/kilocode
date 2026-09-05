@@ -61,7 +61,7 @@ export namespace SecurityRealpath {
    * been written before.
    */
   export async function of(target: string, worktree: string): Promise<string | undefined> {
-    if (!target) return undefined
+    if (!target || /^~[^/\\]*[/\\]/.test(target) || target === "~") return undefined
     const absolute = path.normalize(path.isAbsolute(target) ? target : path.join(worktree, target))
 
     const missing: string[] = []

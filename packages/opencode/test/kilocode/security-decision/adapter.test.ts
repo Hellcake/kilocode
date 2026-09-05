@@ -5,6 +5,7 @@ const containment = { sandbox: "off", network: "allow", destinations: [], escala
 
 function evaluate(
   request: {
+    source?: "builtin" | "mcp"
     permission: string
     patterns: readonly string[]
     metadata?: Record<string, unknown>
@@ -67,8 +68,8 @@ describe("SecurityDecisionAdapter.evaluate", () => {
     expect(out.rule_id).toBe("SEC.V1.DESTRUCTIVE_FS")
   })
 
-  test("treats an unknown permission asking for everything as an opaque delegated action", () => {
-    const out = evaluate({ permission: "mymcp_do_thing", patterns: ["*"], metadata: {} })
+  test("uses explicit MCP provenance for an opaque delegated action", () => {
+    const out = evaluate({ source: "mcp", permission: "mymcp_do_thing", patterns: ["*"], metadata: {} })
     expect(out.decision).toBe("ask")
     expect(out.rule_id).toBe("SEC.V1.DELEGATED_OPAQUE")
   })

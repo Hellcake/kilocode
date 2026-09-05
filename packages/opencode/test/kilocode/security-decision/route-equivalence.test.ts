@@ -86,7 +86,7 @@ describe("route equivalence", () => {
 
   test("destructive workspace change: apply_patch delete and rm agree", () => {
     const patch = structured("edit", ["build/out.js"], { files: [{ type: "delete" }] })
-    const rm = shell("rm -rf build/out.js", [{ operation: "delete", path: "/w/build/out.js" }])
+    const rm = shell("rm -rf build/out.js", [{ operation: "delete", path: "/w/build/out.js" }], "rm")
 
     expect(patch.rule_id).toBe("SEC.V1.DESTRUCTIVE_FS")
     expect(rm.rule_id).toBe(patch.rule_id)
