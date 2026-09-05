@@ -169,6 +169,7 @@ function resolve(ctx: InstanceContext, metadataCalls: { toolCallID: string; valu
       // capture metadata writes so tests can assert on recorded approval provenance
       metadata: (toolCallID, value) => Effect.sync(() => void metadataCalls.push({ toolCallID, value })),
       completeToolCall: () => Effect.void,
+      securityBlocked: () => false,
     },
     bypassAgentCheck: false,
     messages: [],

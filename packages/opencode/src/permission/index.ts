@@ -58,6 +58,8 @@ export type AskInput = PermissionV1.AskInput & {
   containment?: SecurityDecisionTypes.Containment
   /** The agent identity this ask was resolved against. */
   agent?: string
+  /** True when this exact tool call was already stopped by the security layer earlier in the turn. */
+  blocked?: boolean
   /**
    * Re-reads the confinement facts. The security layer calls it after the reviewer answers, so a
    * sandbox toggled during the review cannot be the evidence an approval was granted on.
@@ -234,7 +236,8 @@ const layer = Layer.effect(
     const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
       const { approved, pending } = yield* InstanceState.get(state)
       // kilocode_change start
-      const { ruleset, hardRuleset, containment, containmentLive, authorization, agent, audit, ...request } = input
+      const { ruleset, hardRuleset, containment, containmentLive, authorization, agent, blocked, audit, ...request } =
+        input
       const s = yield* InstanceState.get(state)
       const local = s.session[request.sessionID] ?? []
       // kilocode_change end
@@ -329,6 +332,7 @@ const layer = Layer.effect(
             humanOnly: forceAsk || (isProtected && !trusted),
             containment,
             ...(agent ? { agent } : {}),
+            ...(blocked ? { blocked } : {}),
             live,
             ...(audit ? { audit } : {}), // kilocode_change - surface the reviewer stage while it runs
           })

@@ -60,6 +60,8 @@ export interface Handle {
       attachments?: SessionV1.FilePart[]
     },
   ) => Effect.Effect<void>
+  /** Whether this exact call was already stopped by the security layer earlier in the turn. */
+  readonly securityBlocked: (tool: string, input: unknown) => boolean // kilocode_change
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
   readonly compactError?: () => ReturnType<typeof MessageV2.ContextOverflowError.prototype.toObject> | undefined // kilocode_change
 }
@@ -290,6 +292,9 @@ const layer = Layer.effect(
         if (match.part.tool === "suggest") {
           ctx.telemetry = KiloSessionProcessor.suggestionReviewTelemetry(output.metadata) ?? ctx.telemetry
         }
+        // A call that got through ends whatever run of security blocks preceded it: the model is
+        // making progress again rather than working around a refusal.
+        SecurityContinuation.succeeded(ctx.securityBlocks)
         // kilocode_change end
         yield* settleToolCall(toolCallID)
       })
@@ -313,8 +318,9 @@ const layer = Layer.effect(
         const security = SecurityContinuation.after(ctx.securityBlocks, error, call)
         if (security) {
           // The blocked call never ran, so the turn continues and the model may take another allowed
-          // path. Re-issuing the identical call is not another path: that ends the turn.
-          ctx.blocked = security === "stop"
+          // path. Re-issuing the identical call is not another path, and neither is a run of fresh
+          // spellings of the same intent: both end the turn.
+          ctx.blocked = security !== "continue"
         } else if (
           error instanceof PermissionV1.RejectedError ||
           error instanceof Question.RejectedError ||
@@ -1053,6 +1059,10 @@ const layer = Layer.effect(
         updateToolCall,
         metadata, // kilocode_change
         completeToolCall,
+        // kilocode_change - the turn's blocked set is the processor's; the security layer reads it
+        // through here so a retry is recognised before the reviewer is consulted
+        securityBlocked: (tool: string, input: unknown) =>
+          SecurityContinuation.blocked(ctx.securityBlocks, tool, input),
         ...output, // kilocode_change
         process,
       } satisfies Handle

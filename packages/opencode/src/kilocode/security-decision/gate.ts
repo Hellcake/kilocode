@@ -45,6 +45,12 @@ export namespace KiloSecurityGate {
     humanOnly: boolean
     /** The agent identity this ask was resolved against, when the caller knows it. */
     agent?: string
+    /**
+     * True when this exact call was already stopped by the layer earlier in the turn. The reviewer
+     * has no memory of the turn, so this is the one fact about a retry it could never see for
+     * itself: the action looks as ordinary the second time as it did the first.
+     */
+    blocked?: boolean
     containment?: T.Containment & { probe_id?: string; checked_at?: number }
     /**
      * Re-reads the live authorization state. Called only after the reviewer returns, so an `allow`
@@ -177,6 +183,9 @@ export namespace KiloSecurityGate {
   ) {
     if (directive.decision !== "ask" || !directive.reviewable || !directive.review) return directive
     if (input.humanOnly || floor.conflict) return directive
+    // Coming back at a boundary the layer already closed is not a fresh question, and confinement
+    // does not make it one: a human answers this time, and the call is reported as what it now is.
+    if (input.blocked) return { ...directive, reviewable: false }
     // Nothing is asked of a model that is not there, so nothing is reported as running either.
     if (!SecurityReviewer.bound()) return directive
 

@@ -58,7 +58,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
   model: Provider.Model
   session: Session.Info
-  processor: Pick<SessionProcessor.Handle, "message" | "metadata" | "completeToolCall"> // kilocode_change
+  processor: Pick<SessionProcessor.Handle, "message" | "metadata" | "completeToolCall" | "securityBlocked"> // kilocode_change
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
@@ -101,7 +101,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const flags = yield* RuntimeFlags.Service
   const restricted = yield* SandboxPolicy.networkRestricted(input.session.id) // kilocode_change
   const sandboxed = (yield* SandboxPolicy.status(input.session.id)).enabled // kilocode_change
-  const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => {
+  const context = (args: Record<string, unknown>, options: ToolExecutionOptions, name?: string): Tool.Context => {
     const extra = {
       model: input.model,
       bypassAgentCheck: input.bypassAgentCheck,
@@ -166,6 +166,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             request: {
               ...req,
               sessionID: input.session.id,
+              // kilocode_change - a retry of a call the layer already stopped this turn stays a
+              // human ask; the signature is the continuation model's, over the tool call itself
+              ...(securityEnabled && name && input.processor.securityBlocked(name, args) ? { blocked: true } : {}),
               ...(containment ? { containment, containmentLive } : {}), // kilocode_change
               // kilocode_change - the resolved targets travel with the ask; patterns are untouched
               ...(securityPaths || securityFacts
@@ -257,7 +260,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       execute(args, options) {
         return run.promise(
           Effect.gen(function* () {
-            const ctx = context(args, options)
+            const ctx = context(args, options, item.id) // kilocode_change - name the call for the block registry
             yield* plugin.trigger(
               "tool.execute.before",
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
