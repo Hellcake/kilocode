@@ -183,18 +183,41 @@ describe("SecurityDecisionAdapter.evaluate", () => {
     expect(out.review).toBeUndefined()
   })
 
-  test("does not send a reviewable action when reviewer path input would be truncated", () => {
+  // kilocode_change - 17 targets is an ordinary delete, not an oversized one. The refusal below is
+  // now driven by the request budget, so the fixture is a request that genuinely cannot fit.
+  test("an ordinary number of targets still reaches the reviewer", () => {
     const effects = Array.from({ length: 17 }, (_, i) => ({ operation: "delete", path: `/repo/file-${i}.txt` }))
     const out = evaluate({
       permission: "bash",
-      patterns: ["sed -i s/a/b/ files"],
+      patterns: ["rm files"],
       metadata: {
         securityFacts: {
           complete: true,
           composed: false,
-          executable: "sed",
-          argv: ["sed", "-i", "s/a/b/", "files"],
+          executable: "rm",
+          argv: ["rm", "files"],
+          classified: true,
           effects,
+        },
+      },
+    })
+
+    expect(out).toMatchObject({ decision: "ask", rule_id: "SEC.V1.DESTRUCTIVE_FS", reviewable: true })
+    expect(out.review?.action.paths.length).toBe(17)
+  })
+
+  test("does not send a reviewable action when the action itself cannot fit the reviewer budget", () => {
+    const out = evaluate({
+      permission: "bash",
+      patterns: ["rm huge"],
+      metadata: {
+        securityFacts: {
+          complete: true,
+          composed: false,
+          executable: "rm",
+          argv: ["rm", ...Array.from({ length: 400 }, (_, i) => `argument-${i}`.padEnd(200, "x"))],
+          classified: true,
+          effects: [{ operation: "delete", path: "/repo/docs/old.md" }],
         },
       },
     })
@@ -208,8 +231,8 @@ describe("SecurityDecisionAdapter.evaluate", () => {
     expect(out.review).toBeUndefined()
   })
 
-  test("does not send a reviewable action when reviewer argv input would be truncated", () => {
-    // kilocode_change - a reviewable action is now a soft ambiguity, so the fixture is a delete
+  // kilocode_change - 33 arguments is a file list, not an overflow; it now reaches the reviewer whole
+  test("an ordinary argument count reaches the reviewer with every argument intact", () => {
     const argv = ["rm", ...Array.from({ length: 32 }, (_, i) => `arg-${i}`)]
     const out = evaluate({
       permission: "bash",
@@ -226,13 +249,8 @@ describe("SecurityDecisionAdapter.evaluate", () => {
       },
     })
 
-    expect(out).toMatchObject({
-      decision: "ask",
-      rule_id: "SEC.V1.METADATA_INCOMPLETE",
-      reviewable: false,
-      audit: { metadata_truncated: true },
-    })
-    expect(out.review).toBeUndefined()
+    expect(out).toMatchObject({ decision: "ask", rule_id: "SEC.V1.DESTRUCTIVE_FS", reviewable: true })
+    expect(out.review?.action.argv).toEqual(argv)
   })
 
   // kilocode_change - a clean parse is not proof of safety; an unclassified action is a reviewable ask

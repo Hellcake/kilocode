@@ -90,6 +90,21 @@ describe("SecurityReviewer verdicts", () => {
     expect(out.outcome).toMatchObject({ state: "keep_ask", reason_code: "UNCLEAR_INTENT" })
   })
 
+  // kilocode_change - a verdict is not thrown away for want of a label
+  test.each([
+    ['{"decision":"allow"}'],
+    ['{"decision":"allow","reason_code":""}'],
+    ['{"decision":"allow","reason_code":"has spaces and <html>"}'],
+  ])("a decision without a usable reason code %s is still a verdict", async (text) => {
+    answer(text)
+    const out = await run()
+
+    expect(out.result.decision).toBe("allow")
+    // The model's own label never reaches the audit unless it is well formed, so nothing it wrote
+    // can ride along in the record.
+    expect(out.outcome.reason_code).toBe("UNSPECIFIED")
+  })
+
   test("a timeout keeps the ask", async () => {
     bind(() => new Promise((resolve) => setTimeout(() => resolve('{"decision":"allow"}'), 5_000)))
     const out = await run()
@@ -106,14 +121,15 @@ describe("SecurityReviewer verdicts", () => {
     expect(out.outcome.state).toBe("error")
   })
 
+  // kilocode_change - the decision is the verdict; the reason code is a label on it. A response with
+  // no usable decision is still no verdict, but a decision without a well-formed label is a verdict
+  // the layer can act on, so those cases are covered by the test above instead.
   test.each([
     ["not json at all"],
     ["{}"],
     ['{"decision":"deny","reason_code":"NOPE"}'],
     ['{"decision":"pass","reason_code":"NOPE"}'],
-    ['{"decision":"allow"}'],
-    ['{"decision":"allow","reason_code":""}'],
-    ['{"decision":"allow","reason_code":"has spaces and <html>"}'],
+    ['{"reason_code":"LOOKS_FINE"}'],
     ['["allow"]'],
     ["null"],
   ])("an invalid response %s keeps the ask", async (text) => {
@@ -234,7 +250,10 @@ describe("SecurityReviewer prompt", () => {
     expect(out.request).toBeUndefined()
   })
 
-  test("rejects paths and task text that would be truncated", () => {
+  // kilocode_change - what used to be refused here was refused by an arity cap, not by a budget: 17
+  // targets and a 201-character description are ordinary. The refusal now happens where it belongs,
+  // when the action's own evidence does not fit; context is bounded and declared instead.
+  test("an ordinary number of targets is bounded, not refused", () => {
     const paths = Array.from({ length: 17 }, (_, i) => ({
       class: "ordinary" as const,
       inWorkspace: true,
@@ -242,24 +261,53 @@ describe("SecurityReviewer prompt", () => {
       path: `src/file-${i}.ts`,
     }))
 
-    expect(
-      SecurityReviewer.request({
-        rule_id: "SEC.V1.DESTRUCTIVE_FS",
-        kind: "bash",
-        operation: "exec",
-        paths,
-        containment: request.containment,
-      }),
-    ).toEqual({ truncated: true })
-    expect(
-      SecurityReviewer.request({
-        rule_id: "SEC.V1.DESTRUCTIVE_FS",
-        kind: "bash",
-        operation: "exec",
-        paths: [],
-        containment: request.containment,
-        task: "x".repeat(201),
-      }),
-    ).toEqual({ truncated: true })
+    const out = SecurityReviewer.request({
+      rule_id: "SEC.V1.DESTRUCTIVE_FS",
+      kind: "bash",
+      operation: "exec",
+      paths,
+      containment: request.containment,
+    })
+
+    expect(out.truncated).toBe(false)
+    expect(out.request?.action.paths.length).toBe(17)
+    expect(out.request?.omitted).toBeUndefined()
+  })
+
+  test("an oversized description is shortened and declared, not refused", () => {
+    const out = SecurityReviewer.request({
+      rule_id: "SEC.V1.DESTRUCTIVE_FS",
+      kind: "bash",
+      operation: "exec",
+      paths: [],
+      containment: request.containment,
+      task: "x".repeat(40_000),
+    })
+
+    expect(out.truncated).toBe(false)
+    expect(out.request?.omitted).toEqual([{ field: "task", kept: expect.any(Number), original: 40_000 }])
+  })
+
+  test("targets whose own text cannot fit still refuse the whole request", () => {
+    const paths = Array.from({ length: 40 }, (_, i) => ({
+      class: "ordinary" as const,
+      inWorkspace: false,
+      operation: "delete",
+      // Out of the workspace, so the path string is decision-critical scope rather than context.
+      path: `/elsewhere/${"deep/".repeat(200)}file-${i}.ts`,
+    }))
+
+    const out = SecurityReviewer.request({
+      rule_id: "SEC.V1.DESTRUCTIVE_FS",
+      kind: "bash",
+      operation: "exec",
+      paths,
+      containment: request.containment,
+      // 40 out-of-workspace targets carry no path text at all, so make the action itself the excess.
+      argv: ["rm", ...Array.from({ length: 400 }, (_, i) => `argument-${i}`.padEnd(200, "x"))],
+    })
+
+    expect(out.truncated).toBe(true)
+    expect(out.request).toBeUndefined()
   })
 })

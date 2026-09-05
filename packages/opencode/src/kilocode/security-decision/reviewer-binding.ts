@@ -95,7 +95,7 @@ export namespace SecurityReviewerBinding {
    * state: `SecurityReviewer.review` then reports `not_run` and every ask stands.
    */
   export const install = Effect.fn("SecurityReviewerBinding.install")(function* (
-    config: Pick<Config.Interface, "getGlobal">,
+    config: Pick<Config.Interface, "get" | "getGlobal">,
     provider: Pick<Provider.Interface, "getModel">,
     env?: Record<string, string | undefined>,
   ) {

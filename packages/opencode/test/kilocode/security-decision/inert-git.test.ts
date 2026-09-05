@@ -76,8 +76,12 @@ describe("git cannot be used to read content that a direct read would ask for", 
     ["git log --patch"],
     ["git log -G secret"],
     ["git log -S secret"],
-    ["git diff --stat --output=/tmp/x"],
   ])("%s asks", (command) => asks(command))
+
+  // kilocode_change - the value of a path-valued option is a path: `--output=/tmp/x` names a file
+  // outside the workspace exactly as `-C /outside` does, so it reaches the same boundary rule.
+  test("git diff --stat --output=/tmp/x asks on the path the option carries", () =>
+    asksSensitive("git diff --stat --output=/tmp/x"))
 
   test.each([["git diff -- .env"], ["git blame .env"], ["git log -p -- .env"]])(
     "%s asks on the path itself",
@@ -96,14 +100,19 @@ describe("git cannot be used to read content that a direct read would ask for", 
 
 describe("git flags that move or reprogram the operation are never inert", () => {
   test.each([
-    ["git --git-dir=/elsewhere/.git status"],
-    ["git --work-tree=/outside status"],
     ["git -c core.pager=curl status"],
     ["git -c diff.external=/tmp/x status"],
-    ["git --exec-path=/tmp status"],
     ["git --namespace=x status"],
     ["git -P status"],
   ])("%s asks", (command) => asks(command))
+
+  // kilocode_change - same refusal, reached through the option's value rather than through the verb:
+  // the path a redirecting flag carries is a path in its own right
+  test.each([
+    ["git --git-dir=/elsewhere/.git status"],
+    ["git --work-tree=/outside status"],
+    ["git --exec-path=/tmp status"],
+  ])("%s asks on the redirected path itself", (command) => asksSensitive(command))
 
   test("a redirected working directory is an out-of-workspace path in its own right", () =>
     asksSensitive("git -C /outside status"))
@@ -111,7 +120,6 @@ describe("git flags that move or reprogram the operation are never inert", () =>
 
 describe("unknown or content-bearing arguments fail closed", () => {
   test.each([
-    ["git status --output=/tmp/x"],
     ["git status --unknown-flag"],
     ["git status --ext-diff"],
     ["git rev-parse --unknown"],
@@ -176,8 +184,13 @@ describe("history and name-only reporting passes", () => {
     ["git show --stat HEAD:.env"],
     ["git show --name-only HEAD:.env"],
     ["git log --ext-diff"],
-    ["git log --output=/tmp/x"],
   ])("%s asks", (command) => asks(command))
+
+  // kilocode_change - `--output=` carries a path, so these two land on the boundary rule instead
+  test.each([["git status --output=/tmp/x"], ["git log --output=/tmp/x"]])(
+    "%s asks on the path the option carries",
+    (command) => asksSensitive(command),
+  )
 })
 
 /**
@@ -207,18 +220,25 @@ describe("containment does not re-admit a refused git invocation", () => {
     )
   }
 
-  test.each([
-    ["git show HEAD:.env"],
-    ["git log -p"],
-    ["git diff"],
-    ["git --git-dir=/elsewhere/.git status"],
-  ])("%s still asks inside a proven sandbox", (command) => {
-    const out = inConfinement(command)
-    expect({ command, rule: out.rule_id, decision: out.decision }).toEqual({
-      command,
-      rule: "SEC.V1.UNCLASSIFIED_EXEC",
-      decision: "ask",
-    })
+  test.each([["git show HEAD:.env"], ["git log -p"], ["git diff"]])(
+    "%s still asks inside a proven sandbox",
+    (command) => {
+      const out = inConfinement(command)
+      expect({ command, rule: out.rule_id, decision: out.decision }).toEqual({
+        command,
+        rule: "SEC.V1.UNCLASSIFIED_EXEC",
+        decision: "ask",
+      })
+    },
+  )
+
+  // kilocode_change - a redirected repository is a path outside the workspace, and confinement does
+  // not make an out-of-workspace target an in-workspace one
+  test("git --git-dir=/elsewhere/.git status still asks inside a proven sandbox", () => {
+    const out = inConfinement("git --git-dir=/elsewhere/.git status")
+    expect(out.rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    expect(out.decision).toBe("ask")
+    expect(out.reviewable).toBe(false)
   })
 
   test.each([["git config core.hooksPath ./hooks"], ["git push --force"]])(
