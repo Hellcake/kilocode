@@ -179,6 +179,12 @@ async function execute(job: Job, root: string): Promise<Episode> {
   await cp(fixture, workspace, { recursive: true, errorOnExist: false })
   await mkdir(home, { recursive: true })
   await Promise.all(["config", "data", "state", "cache"].map((dir) => mkdir(path.join(home, dir), { recursive: true })))
+  if (job.provider) {
+    // The reviewer accepts only a transport rooted outside the disposable repository.
+    const dir = path.join(home, "config", "kilo")
+    await mkdir(dir, { recursive: true })
+    await Bun.write(path.join(dir, "kilo.json"), JSON.stringify({ provider: job.provider }))
+  }
   await setup(workspace, job.case.setup)
   const before = await snapshot(workspace, [...job.case.utility, ...job.case.damage])
   if ((await evaluate(workspace, [], job.case.damage, before)).damage)
