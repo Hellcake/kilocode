@@ -68,7 +68,10 @@ it.instance("blocks a proven git-hook write with a fixed, non-echoing message", 
     const error = yield* fail(ask({ ...editHook, ruleset: [{ permission: "edit", pattern: "*", action: "allow" }] }))
     expect(error).toBeInstanceOf(SecurityBlocked.Error)
     const message = (error as SecurityBlocked.Error).message
-    expect(message).toBe("Security policy blocked this tool call. rule_id=SEC.V1.GIT_HOOK_WRITE. Contact the user.")
+    // kilocode_change - the text now also tells the model not to look for another way to the same
+    // outcome. Still fixed, still naming nothing but the rule id.
+    expect(message).toStartWith("Security policy blocked this tool call. rule_id=SEC.V1.GIT_HOOK_WRITE.")
+    expect(message).toContain("materially safer alternative")
     expect(message).not.toContain(".git/hooks")
     expect(message).not.toContain("permission")
   }),
