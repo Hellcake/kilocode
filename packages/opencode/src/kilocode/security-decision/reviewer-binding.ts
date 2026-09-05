@@ -101,7 +101,7 @@ export namespace SecurityReviewerBinding {
   ) {
     const resolved = yield* SecurityReviewerConfig.resolve(config, env)
     if (!resolved.enabled) {
-      SecurityReviewer.reset()
+      SecurityReviewer.reset(resolved.reason)
       return { bound: false, reason: resolved.reason } satisfies Outcome
     }
 
@@ -111,11 +111,11 @@ export namespace SecurityReviewerBinding {
     // A model the provider cannot produce is not a reviewer: stay unbound rather than reach for
     // whatever the session happens to be using.
     if (!model) {
-      SecurityReviewer.reset()
+      SecurityReviewer.reset("model_unavailable")
       return { bound: false, reason: "model_unavailable" } satisfies Outcome
     }
 
-    SecurityReviewer.bind(complete(model), resolved.timeout)
+    SecurityReviewer.bind(complete(model), resolved.timeout, `${resolved.providerID}/${resolved.modelID}`)
     return {
       bound: true,
       providerID: resolved.providerID,

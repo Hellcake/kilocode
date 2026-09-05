@@ -31,6 +31,21 @@ export namespace SecurityReviewer {
   export const RUNNING: Outcome = { state: "running" }
 
   /**
+   * What this process is bound to, for the record.
+   *
+   * A layer whose reviewer never runs and a layer whose reviewer always declines produce the same
+   * stream of asks. Only the binding can tell them apart, so it is recorded: the model when there
+   * is one, and otherwise the reason the trusted resolution refused to name one.
+   */
+  export type Attribution = Readonly<{ reason: string; model?: string }>
+
+  let attribution: Attribution = { reason: "not_installed" }
+
+  export function attributed(): Attribution {
+    return attribution
+  }
+
+  /**
    * The only bound on the request, and it is a bound on *size*, not on meaning.
    *
    * What preceded it was a set of structural caps — 32 arguments, 128 characters each, 16 paths, a
@@ -101,9 +116,10 @@ export namespace SecurityReviewer {
   /** The deadline the trusted configuration chose for this binding. */
   let deadline: number | undefined
 
-  export function bind(fn: Complete | undefined, timeout?: number) {
+  export function bind(fn: Complete | undefined, timeout?: number, model?: string) {
     complete = fn
     deadline = timeout
+    attribution = model ? { reason: "bound", model } : { reason: "bound" }
   }
 
   export function bound() {
@@ -111,9 +127,10 @@ export namespace SecurityReviewer {
   }
 
   /** Test seam and shutdown hook: the binding is otherwise process-lifetime. */
-  export function reset() {
+  export function reset(reason = "not_installed") {
     complete = undefined
     deadline = undefined
+    attribution = { reason }
   }
 
   /** Bytes the serialized request would occupy. The prompt wraps it, so this is the whole cost. */

@@ -72,6 +72,24 @@ export namespace SecurityDecisionAdapter {
 
   export type Enforcement = "allow" | "ask_pending" | "reject" | "deny" | "blocked" | "error"
 
+  /**
+   * How the review itself ended.
+   *
+   * Deliberately not Codex's vocabulary: their reviewer can approve *or* deny, so "denied" is one of
+   * its outcomes. Ours can only narrow an ask into an allow, so the two answers are `narrowed` and
+   * `held` — declining to narrow is the default answer to the question, not a refusal.
+   */
+  export type TerminalStatus = "not_reviewed" | "in_progress" | "narrowed" | "held" | "timed_out" | "failed_closed"
+
+  const TERMINAL: Record<SecurityReviewer.State, TerminalStatus> = {
+    not_run: "not_reviewed",
+    running: "in_progress",
+    allow: "narrowed",
+    keep_ask: "held",
+    timeout: "timed_out",
+    error: "failed_closed",
+  }
+
   export type Audit = {
     schema: "kilo.security-decision/v1"
     policy_version: string
@@ -79,8 +97,15 @@ export namespace SecurityDecisionAdapter {
     reason: string
     decision: T.Decision
     reviewer: SecurityReviewer.Outcome
+    /** Whether the reviewer's own evidence could not be bounded, as distinct from a metadata gap. */
+    reviewer_truncated: boolean
+    /** What this process is bound to: the model when there is one, else why there is not. */
+    reviewer_binding: string
+    reviewer_model?: string
     final_enforcement?: Enforcement
     enforcement_source?: string
+    /** How the review ended, in this layer's own vocabulary. Set when the record is finalized. */
+    terminal_status?: TerminalStatus
     authority_level: T.Authority
     authority_basis: "none" | "xdg_scope" | "hard_product"
     authority_conflict: boolean
@@ -544,7 +569,9 @@ export namespace SecurityDecisionAdapter {
     result: T.Result,
     metadata: T.Input["metadata"],
     started: number,
+    truncated = false,
   ): Audit {
+    const attribution = SecurityReviewer.attributed()
     return {
       schema: "kilo.security-decision/v1",
       policy_version: R.POLICY_VERSION,
@@ -552,6 +579,9 @@ export namespace SecurityDecisionAdapter {
       reason: result.reason,
       decision: result.decision,
       reviewer: SecurityReviewer.SKIPPED,
+      reviewer_truncated: truncated,
+      reviewer_binding: attribution.reason,
+      ...(attribution.model ? { reviewer_model: attribution.model } : {}),
       authority_level: ctx.floor.authority,
       authority_basis:
         ctx.floor.authority === "xdg_global" ? "xdg_scope" : ctx.floor.authority === "hard" ? "hard_product" : "none",
@@ -596,7 +626,7 @@ export namespace SecurityDecisionAdapter {
         rule_id: result.rule_id,
         reviewable: result.reviewable,
         ...(prepared?.request ? { review: prepared.request } : {}),
-        audit: audit(request, ctx, result, metadata, started),
+        audit: audit(request, ctx, result, metadata, started, prepared?.truncated === true),
       }
     } catch {
       // Anything unexpected in normalization, the core or the reviewer fails closed to ask.
@@ -620,6 +650,11 @@ export namespace SecurityDecisionAdapter {
   }
 
   export function finalize(record: Audit, enforcement: Enforcement, source: string): Audit {
-    return { ...record, final_enforcement: enforcement, enforcement_source: source }
+    return {
+      ...record,
+      final_enforcement: enforcement,
+      enforcement_source: source,
+      terminal_status: TERMINAL[record.reviewer.state],
+    }
   }
 }

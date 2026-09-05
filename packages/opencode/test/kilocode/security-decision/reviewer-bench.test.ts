@@ -11,6 +11,7 @@ import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import { SecurityReviewer } from "@/kilocode/security-decision/reviewer"
 import { provideTestInstance, tmpdir } from "../../fixture/fixture"
 import { BENIGN, ADVERSARIAL } from "./corpus"
+import { SecurityDamage } from "./damage" // kilocode_change - independent damage oracle
 
 /**
  * The reviewer benchmark.
@@ -91,6 +92,7 @@ function percentile(values: number[], p: number) {
 
 async function measure(corpus: readonly string[], cwd: string) {
   const rows: Row[] = []
+  const scored: SecurityDamage.Scored[] = [] // kilocode_change - safety accounting alongside autonomy
   let exposed = 0
   for (const command of corpus) {
     const scanned = await scan(command, cwd)
@@ -98,7 +100,18 @@ async function measure(corpus: readonly string[], cwd: string) {
       { permission: "bash", patterns: scanned.patterns, metadata: scanned.metadata, sessionID: "ses_bench" },
       context(cwd),
     )
-    if (directive.decision !== "ask" || !directive.reviewable || !directive.review) continue
+    // kilocode_change - what the call would actually have done, read independently of the layer
+    const facts = (scanned.metadata as { securityFacts?: { effects?: SecurityDamage.Effect[]; argv?: string[] } })
+      ?.securityFacts
+    const action = {
+      workspace: cwd,
+      effects: (facts?.effects ?? []) as readonly SecurityDamage.Effect[],
+      ...(facts?.argv ? { argv: facts.argv } : {}),
+    }
+    if (directive.decision !== "ask" || !directive.reviewable || !directive.review) {
+      scored.push({ action, decision: directive.decision, reviewer: "not_run" })
+      continue
+    }
     exposed++
     const reviewed = await Effect.runPromise(
       SecurityReviewer.review(
@@ -118,8 +131,9 @@ async function measure(corpus: readonly string[], cwd: string) {
       ...(reviewed.outcome.reason_code ? { reason: reviewed.outcome.reason_code } : {}),
       ms: reviewed.outcome.latency_ms ?? 0,
     })
+    scored.push({ action, decision: directive.decision, reviewer: reviewed.outcome.state })
   }
-  return { rows, exposed, total: corpus.length }
+  return { rows, exposed, total: corpus.length, tally: SecurityDamage.tally(scored) }
 }
 
 function report(name: string, out: Awaited<ReturnType<typeof measure>>) {
@@ -135,6 +149,14 @@ function report(name: string, out: Awaited<ReturnType<typeof measure>>) {
   console.log(`  timeout           ${by("timeout")}`)
   console.log(`  error             ${by("error")}`)
   console.log(`  latency p50/p95   ${percentile(latency, 50)}ms / ${percentile(latency, 95)}ms`)
+  // kilocode_change - the safety half. Exposure says how much a model was asked; this says what a
+  // model saying yes would have cost, judged by an oracle that never consults the layer.
+  const tally = out.tally
+  console.log(`  damaging actions  ${tally.damaging}  (stopped ${tally.stopped_damage})`)
+  console.log(`  deterministic_bypass ${tally.deterministic_bypass}`)
+  console.log(`  reviewer_bypass      ${tally.reviewer_bypass}`)
+  console.log(`  unsafe_auto_approvals ${tally.unsafe_auto_approvals}`)
+  console.log(`  auto_allowed (ordinary) ${tally.auto_allowed}`)
 }
 
 const enabled = process.env["KILO_SECURITY_REVIEWER_BENCH"] === "1"
