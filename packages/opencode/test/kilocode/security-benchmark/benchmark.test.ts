@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { load, agents, replays } from "../../../benchmark/kilocode/security-auto/cases"
 import { snapshot, evaluate } from "../../../benchmark/kilocode/security-auto/oracles"
 import { run } from "../../../benchmark/kilocode/security-auto/replay"
-import { read, summarize, type Episode } from "../../../benchmark/kilocode/security-auto/report"
+import { markdown, read, summarize, type Episode } from "../../../benchmark/kilocode/security-auto/report"
 import { get } from "../../../benchmark/kilocode/security-auto/profiles"
 import { CaseSchema } from "../../../benchmark/kilocode/security-auto/schema"
 import { completion, continued, extract } from "../../../benchmark/kilocode/security-auto/signals"
@@ -200,6 +200,44 @@ describe("security benchmark report", () => {
       expected_rules: [],
     } satisfies Episode
     expect(summarize([episode]).at(0)?.auto_bypass_violations).toBe(1)
+  })
+
+  test("reports measured phases and an explicit manual-decision estimate", () => {
+    const episode = {
+      ...sample,
+      signals: [
+        {
+          engine: "security-decision/v1",
+          decision: "ask",
+          enforcement: "deny",
+          latency_ms: 2,
+          reviewer_latency_ms: 8,
+          call_id: "decision",
+        },
+      ],
+      timing: {
+        setup_ms: 20,
+        process_ms: 100,
+        startup_ms: 30,
+        step_ms: 50,
+        tool_ms: 10,
+        other_ms: 20,
+        scoring_ms: 5,
+        reviewer_ms: 8,
+        decision_ms: 2,
+        steps: 2,
+      },
+    } satisfies Episode
+    const summary = summarize([episode], 20_000).at(0)!
+    expect(summary.timed_runs).toBe(1)
+    expect(summary.mean_startup_ms).toBe(30)
+    expect(summary.mean_agent_ms).toBe(40)
+    expect(summary.automated_decisions).toBe(1)
+    expect(summary.machine_decision_ms).toBe(10)
+    expect(summary.estimated_human_ms).toBe(20_000)
+    expect(summary.estimated_saved_ms).toBe(19_990)
+    expect(summary.estimated_decision_speedup).toBe(2_000)
+    expect(markdown([summary])).toContain("Estimated time saved")
   })
 })
 

@@ -31,6 +31,7 @@ const parsed = parseArgs({
     help: { type: "boolean", short: "h", default: false },
     "provider-config": { type: "string" },
     "wall-seconds": { type: "string" },
+    "human-seconds": { type: "string", default: "15" },
   },
 })
 
@@ -60,12 +61,13 @@ type Manifest = Readonly<{
   fingerprint: string
   fingerprint_files: number
   dirty: boolean
+  human_decision_seconds: number
   provider_config_sha256?: string
 }>
 
-async function reports(out: string, episodes: readonly Episode[]) {
+async function reports(out: string, episodes: readonly Episode[], human: number) {
   await mkdir(out, { recursive: true })
-  const summary = summarize(episodes)
+  const summary = summarize(episodes, human)
   await Promise.all([
     Bun.write(path.join(out, "summary.json"), JSON.stringify(summary, null, 2) + "\n"),
     Bun.write(path.join(out, "report.md"), markdown(summary)),
@@ -101,7 +103,7 @@ function dirty() {
   return proc.exitCode !== 0 || proc.stdout.toString().trim().length > 0
 }
 
-async function pool(jobs: Job[], workers: number, out: string) {
+async function pool(jobs: Job[], workers: number, out: string, human: number) {
   const queue = [...jobs]
   const results: Episode[] = []
   const sink = { pending: Promise.resolve() }
@@ -116,7 +118,7 @@ async function pool(jobs: Job[], workers: number, out: string) {
       sink.pending = sink.pending.then(async () => {
         results.push(result)
         await appendFile(path.join(out, "episodes.jsonl"), JSON.stringify(result) + "\n")
-        await reports(out, results)
+        await reports(out, results, human)
       })
       await sink.pending
       process.stderr.write(
@@ -143,7 +145,7 @@ function help() {
     `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts report --input results/episodes.jsonl\n\n`,
   )
   process.stdout.write(`Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id --out dir --keep\n`)
-  process.stdout.write(`         --provider-config file.json --wall-seconds N\n`)
+  process.stdout.write(`         --provider-config file.json --wall-seconds N --human-seconds N\n`)
 }
 
 async function doctor() {
@@ -177,6 +179,7 @@ async function doctor() {
 async function main() {
   if (parsed.positionals.length > 1) throw new Error("expected one command; use --help")
   const command = parsed.values.help ? "help" : (parsed.positionals.at(0) ?? "help")
+  const human = number(parsed.values["human-seconds"], "human-seconds") * 1_000
   if (command === "help") return help()
   if (command === "doctor") return doctor()
   if (command === "profiles") {
@@ -194,7 +197,7 @@ async function main() {
       }),
     )
     const out = path.resolve(parsed.values.out ?? path.dirname(input))
-    await reports(out, episodes)
+    await reports(out, episodes, human)
     process.stdout.write(`${path.join(out, "report.md")}\n`)
     return
   }
@@ -309,13 +312,14 @@ async function main() {
       fingerprint: source.digest,
       fingerprint_files: source.files,
       dirty: dirty(),
+      human_decision_seconds: human / 1_000,
       ...(provider
         ? { provider_config_sha256: new Bun.CryptoHasher("sha256").update(JSON.stringify(provider)).digest("hex") }
         : {}),
     }
     await Bun.write(path.join(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n")
     await Bun.write(path.join(out, "episodes.jsonl"), "")
-    const episodes = await pool(jobs, workers, out)
+    const episodes = await pool(jobs, workers, out, human)
     if (episodes.some(invalid) || summarize(episodes).some((item) => item.auto_bypass_violations > 0))
       process.exitCode = 1
     process.stdout.write(`${path.join(out, "report.md")}\n`)

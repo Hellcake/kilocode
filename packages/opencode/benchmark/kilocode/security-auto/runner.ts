@@ -90,6 +90,36 @@ function tools(events: readonly Record<string, unknown>[]) {
   ).size
 }
 
+function span(value: unknown) {
+  if (!record(value)) return 0
+  const start = value["start"]
+  const end = value["end"]
+  if (typeof start !== "number" || typeof end !== "number" || !Number.isFinite(start) || !Number.isFinite(end))
+    return 0
+  return Math.max(0, end - start)
+}
+
+function observed(events: readonly Record<string, unknown>[]) {
+  const result = { steps: 0, step_ms: 0, tool_ms: 0 }
+  for (const event of events) {
+    const raw = event["part"]
+    const part = record(raw) ? raw : undefined
+    if (event["type"] === "step_finish") {
+      const clock = part?.["time"]
+      const time = record(clock) ? clock : undefined
+      const elapsed = time?.["elapsed"]
+      result.steps += 1
+      result.step_ms += typeof elapsed === "number" && Number.isFinite(elapsed) ? Math.max(0, elapsed) : span(time)
+      continue
+    }
+    if (event["type"] !== "tool_use") continue
+    const data = part?.["state"]
+    const state = record(data) ? data : undefined
+    result.tool_ms += span(state?.["time"])
+  }
+  return result
+}
+
 async function output(stream: ReadableStream<Uint8Array>, file: string, line?: (value: string) => void) {
   const reader = stream.getReader()
   const writer = Bun.file(file).writer()
@@ -140,6 +170,7 @@ function stop(proc: Pick<Bun.Subprocess, "pid" | "kill" | "exitCode">) {
 }
 
 async function execute(job: Job, root: string): Promise<Episode> {
+  const preparing = Date.now()
   const id = `${job.case.id}--${job.profile.id}--${job.repeat}`
   const workspace = path.join(root, "workspace")
   const home = path.join(root, "home")
@@ -189,13 +220,14 @@ async function execute(job: Job, root: string): Promise<Episode> {
     windowsHide: true,
     detached: process.platform !== "win32",
   })
-  const state = { timeout: false, limited: false, calls: new Set<string>() }
+  const state = { timeout: false, limited: false, calls: new Set<string>(), first: 0 }
   const timer = setTimeout(() => {
     state.timeout = true
     stop(proc)
   }, job.case.limits.wall_seconds * 1000)
   const [stdout, , code] = await Promise.all([
     output(proc.stdout, outlog, (line) => {
+      if (state.first === 0) state.first = Date.now()
       const event = parse(line).at(0)
       if (event?.["type"] !== "tool_use") return
       const part = event["part"]
@@ -212,9 +244,12 @@ async function execute(job: Job, root: string): Promise<Episode> {
     clearTimeout(timer)
     stop(proc)
   })
+  const ended = Date.now()
   const events = parse(stdout)
   const signals = extract(events)
+  const seen = observed(events)
   const score = await evaluate(workspace, job.case.utility, job.case.damage, before)
+  const scored = Date.now()
   const status = state.timeout ? "timeout" : state.limited ? "tool_limit" : completion(events, code)
   const episode: Episode = {
     id,
@@ -232,7 +267,7 @@ async function execute(job: Job, root: string): Promise<Episode> {
       ? { error: `CLI ${status}; inspect ${path.relative(job.out, errlog)}` }
       : {}),
     repeat: job.repeat,
-    duration_ms: Date.now() - started,
+    duration_ms: scored - started,
     exit_code: code,
     timed_out: state.timeout,
     tool_limit_exceeded: state.limited,
@@ -244,6 +279,21 @@ async function execute(job: Job, root: string): Promise<Episode> {
     stdout_file: path.relative(job.out, outlog),
     stderr_file: path.relative(job.out, errlog),
     expected_rules: job.case.expected_rules,
+    timing: {
+      setup_ms: started - preparing,
+      process_ms: ended - started,
+      startup_ms: state.first === 0 ? ended - started : state.first - started,
+      step_ms: seen.step_ms,
+      tool_ms: seen.tool_ms,
+      other_ms: Math.max(
+        0,
+        ended - started - (state.first === 0 ? ended - started : state.first - started) - seen.step_ms,
+      ),
+      scoring_ms: scored - ended,
+      reviewer_ms: signals.reduce((total, signal) => total + (signal.reviewer_latency_ms ?? 0), 0),
+      decision_ms: signals.reduce((total, signal) => total + (signal.latency_ms ?? 0), 0),
+      steps: seen.steps,
+    },
     ...(job.keep ? { workspace } : {}),
   }
   return episode
