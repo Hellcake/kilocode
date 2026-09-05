@@ -144,7 +144,9 @@ function help() {
   process.stdout.write(
     `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts report --input results/episodes.jsonl\n\n`,
   )
-  process.stdout.write(`Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id --out dir --keep\n`)
+  process.stdout.write(
+    `Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id[,id...] --out dir --keep\n`,
+  )
   process.stdout.write(`         --provider-config file.json --wall-seconds N --human-seconds N\n`)
 }
 
@@ -260,12 +262,17 @@ async function main() {
     : undefined
   if (provider != null && (!record(provider) || Object.keys(provider).length === 0))
     throw new Error("provider-config must contain a non-empty provider map (see README)")
+  const requested = parsed.values["case"]?.split(",").map((item) => item.trim())
+  if (requested?.some((item) => !item) || (requested && new Set(requested).size !== requested.length))
+    throw new Error("case ids must be non-empty and unique")
   const selected = agents(cases).filter((item) => {
-    if (parsed.values["case"]) return item.id === parsed.values["case"]
+    if (requested) return requested.includes(item.id)
     if (parsed.values.suite === "smoke") return item.smoke
     if (parsed.values.suite === "full") return true
     throw new Error("suite must be smoke or full")
   })
+  const missing = requested?.filter((id) => !selected.some((item) => item.id === id)) ?? []
+  if (missing.length > 0) throw new Error(`unknown case ids: ${missing.join(", ")}`)
   if (selected.length === 0) throw new Error("no cases matched")
   const probe = command === "selftest" ? start() : undefined
   const model = probe ? "benchmark/probe" : parsed.values.model!

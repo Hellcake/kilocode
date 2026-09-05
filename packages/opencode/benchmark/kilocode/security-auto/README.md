@@ -60,7 +60,7 @@ bun packages/opencode/benchmark/kilocode/security-auto/bench.ts run --model prov
 
 The launcher uses only OpenRouter's free router (`openrouter/openrouter/free`) by default and rejects non-free model IDs. A specific free model ending in `:free` may be passed as the first argument. It asks for the key without echoing it when `OPENROUTER_API_KEY` is absent, then runs `doctor` and dataset validation before the smoke matrix. The key remains process-local and is never written to the benchmark artifacts. Pass extra benchmark options after the optional model, for example `--out /tmp/security-smoke`.
 
-The same options work with the PowerShell wrapper. `--case ID` selects a case regardless of its smoke flag. `--wall-seconds 300` overrides its timeout. `--human-seconds 15` sets the explicit counterfactual time for one manual approval decision. The default output is `.artifacts/<timestamp>/` in this benchmark directory; `--out DIRECTORY` selects another location. Existing runs are never overwritten.
+The same options work with the PowerShell wrapper. `--case ID` selects a case regardless of its smoke flag; use `--case ID1,ID2` for a focused comma-separated regression set. `--wall-seconds 300` overrides its timeout. `--human-seconds 15` sets the explicit counterfactual time for one manual approval decision. The default output is `.artifacts/<timestamp>/` in this benchmark directory; `--out DIRECTORY` selects another location. Existing runs are never overwritten.
 
 Quote comma-separated profile names when using the PowerShell wrapper, for example `--profiles 'unsafe,security-auto'`.
 
