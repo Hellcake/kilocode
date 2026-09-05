@@ -127,17 +127,19 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           // `SandboxPolicy.execute` runs the call under. Facts captured when the tool set was built
           // go stale on a `/sandbox` toggle or a config reconcile, and the call would then be allowed
           // against a profile it no longer executes under.
-          const live = securityEnabled
-            ? yield* SandboxPolicy.containment(input.session.id).pipe(
-                Effect.provideService(Config.Service, config),
-                Effect.provideService(Database.Service, database),
-              )
-            : undefined
-          const containment = live
-            ? yield* Effect.promise(() =>
-                ContainmentMacos.facts({ ...live, escalated: extra.sandboxEscalation }),
-              )
-            : undefined
+          // kilocode_change - the same read, callable again: the security layer re-takes these
+          // facts after its reviewer answers so a `/sandbox` toggle during the review cannot be the
+          // confinement an approval was granted on.
+          const containmentLive = Effect.fn("KiloTools.containment")(function* () {
+            const snapshot = yield* SandboxPolicy.containment(input.session.id).pipe(
+              Effect.provideService(Config.Service, config),
+              Effect.provideService(Database.Service, database),
+            )
+            return yield* Effect.promise(() =>
+              ContainmentMacos.facts({ ...snapshot, escalated: extra.sandboxEscalation }),
+            )
+          })
+          const containment = securityEnabled ? yield* containmentLive() : undefined
           // kilocode_change start - resolve filesystem identity once, before the decision runs, so a
           // symlink is judged by what it points at while the pure core stays free of IO
           const worktree = securityEnabled ? (yield* InstanceState.context).worktree : undefined
@@ -164,7 +166,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             request: {
               ...req,
               sessionID: input.session.id,
-              ...(containment ? { containment } : {}),
+              ...(containment ? { containment, containmentLive } : {}), // kilocode_change
               // kilocode_change - the resolved targets travel with the ask; patterns are untouched
               ...(securityPaths || securityFacts
                 ? {

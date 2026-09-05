@@ -56,6 +56,22 @@ export type AskInput = PermissionV1.AskInput & {
   hardRuleset?: PermissionV1.Ruleset
   /** Live containment facts for the security decision layer; never published to clients. */
   containment?: SecurityDecisionTypes.Containment
+  /** The agent identity this ask was resolved against. */
+  agent?: string
+  /**
+   * Re-reads the confinement facts. The security layer calls it after the reviewer answers, so a
+   * sandbox toggled during the review cannot be the evidence an approval was granted on.
+   */
+  containmentLive?: () => Effect.Effect<SecurityDecisionTypes.Containment>
+  /**
+   * Re-reads the agent and session rulesets. Same reason: the ruleset a verdict was computed under
+   * has to still be the ruleset in force when the verdict is applied.
+   */
+  authorization?: () => Effect.Effect<{
+    ruleset: PermissionV1.Ruleset
+    hardRuleset?: PermissionV1.Ruleset
+    agent?: string
+  }>
   /**
    * Sink for the security layer's audit record. Called with the *initial* record before the call is
    * auto-approved or published as an ask, so a rejected or abandoned ask is still audited.
@@ -218,7 +234,7 @@ const layer = Layer.effect(
     const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
       const { approved, pending } = yield* InstanceState.get(state)
       // kilocode_change start
-      const { ruleset, hardRuleset, containment, audit, ...request } = input
+      const { ruleset, hardRuleset, containment, containmentLive, authorization, agent, audit, ...request } = input
       const s = yield* InstanceState.get(state)
       const local = s.session[request.sessionID] ?? []
       // kilocode_change end
@@ -228,20 +244,22 @@ const layer = Layer.effect(
       // kilocode_change start - protect config access while honoring explicit global skill trust
       const isProtected = ConfigProtection.isRequest(request)
       const skill = ConfigProtection.globalSkillPattern(request)
-      const trusted = skill
-        ? (() => {
-            const rule = ExternalDirectoryPermission.evaluate(request.permission, skill, approved)
+      // kilocode_change - factored so the security layer can re-run the same trust test against
+      // freshly read state after its reviewer awaits, instead of reusing this one's answer
+      const trustedFor = Effect.fn("Permission.trusted")(function* (rules: Rule[]) {
+        if (!skill) return false
+        const direct = ExternalDirectoryPermission.evaluate(request.permission, skill, rules)
+        if (direct.action === "allow" && direct.pattern === skill) return true
+        return yield* config.getGlobal().pipe(
+          Effect.map((global) => fromConfig(global.permission ?? {})),
+          Effect.map((globalRules) => {
+            const rule = ExternalDirectoryPermission.evaluate(request.permission, skill, globalRules)
             return rule.action === "allow" && rule.pattern === skill
-          })() ||
-          (yield* config.getGlobal().pipe(
-            Effect.map((global) => fromConfig(global.permission ?? {})),
-            Effect.map((rules) => {
-              const rule = ExternalDirectoryPermission.evaluate(request.permission, skill, rules)
-              return rule.action === "allow" && rule.pattern === skill
-            }),
-            Effect.catch(() => Effect.succeed(false)),
-          ))
-        : false
+          }),
+          Effect.catch(() => Effect.succeed(false)),
+        )
+      })
+      const trusted = yield* trustedFor(approved)
       // kilocode_change end
 
       const forceAsk = request.metadata?.["skillShell"] === true || request.metadata?.["sandboxEscalation"] === true // kilocode_change
@@ -278,6 +296,26 @@ const layer = Layer.effect(
       // Runs after the hard veto, the explicit deny and the human-only guards, and before the
       // auto-return/pending split. It is monotonic: it may raise an allow to ask or block a proven
       // destructive call, never the reverse, and it is inert while the feature flag is off.
+      // kilocode_change - a fresh read of everything the decision rests on. The security layer calls
+      // it only after its reviewer answers, so nothing here runs on the ordinary path.
+      const live = Effect.fn("Permission.live")(function* () {
+        const fresh = authorization ? yield* authorization() : undefined
+        const rules = fresh?.ruleset ?? ruleset
+        const now = yield* InstanceState.get(state)
+        const session = now.session[request.sessionID] ?? []
+        const resolvedNow: KiloSecurityGate.Resolved[] = request.patterns.map((pattern) => ({
+          pattern,
+          action: resolve(request.permission, pattern, rules, now.approved, session).action,
+        }))
+        const trustedNow = yield* trustedFor(now.approved)
+        const containmentNow = containmentLive ? yield* containmentLive() : containment
+        return {
+          resolved: resolvedNow,
+          humanOnly: forceAsk || (isProtected && !trustedNow),
+          ...(containmentNow ? { containment: containmentNow } : {}),
+          ...((fresh?.agent ?? agent) ? { agent: fresh?.agent ?? agent } : {}),
+        }
+      })
       const security = SecurityDecisionAdapter.enabled()
         ? yield* KiloSecurityGate.evaluate({
             config,
@@ -290,6 +328,8 @@ const layer = Layer.effect(
             resolved,
             humanOnly: forceAsk || (isProtected && !trusted),
             containment,
+            ...(agent ? { agent } : {}),
+            live,
             ...(audit ? { audit } : {}), // kilocode_change - surface the reviewer stage while it runs
           })
         : undefined

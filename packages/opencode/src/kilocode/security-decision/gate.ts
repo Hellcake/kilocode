@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import type * as Config from "@/config/config"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { SecurityAuthority } from "./authority"
+import { SecurityAuthorization } from "./authorization"
 import { SecurityDecisionAdapter } from "./adapter"
 import { SecurityDecisionRules as R } from "./rules"
 import { SecurityReviewer } from "./reviewer"
@@ -18,6 +19,18 @@ import type { SecurityDecisionTypes as T } from "./types"
 export namespace KiloSecurityGate {
   export type Resolved = Readonly<{ pattern: string; action: PermissionV1.Action }>
 
+  /**
+   * A fresh read of everything a decision depends on and that can move while the reviewer is being
+   * asked. Supplied by the caller because only it owns the ruleset, the agent and the sandbox
+   * snapshot; the XDG block is re-read here, since this module already owns that source.
+   */
+  export type Live = Readonly<{
+    resolved: readonly Resolved[]
+    humanOnly: boolean
+    containment?: T.Containment
+    agent?: string
+  }>
+
   export type Input = Readonly<{
     config: Pick<Config.Interface, "getGlobal">
     workspace: string
@@ -30,7 +43,14 @@ export namespace KiloSecurityGate {
     resolved: readonly Resolved[]
     /** True when an existing human-only or config-protection guard already forces a prompt. */
     humanOnly: boolean
+    /** The agent identity this ask was resolved against, when the caller knows it. */
+    agent?: string
     containment?: T.Containment & { probe_id?: string; checked_at?: number }
+    /**
+     * Re-reads the live authorization state. Called only after the reviewer returns, so an `allow`
+     * that was computed against state the session has since left is dropped instead of applied.
+     */
+    live?: () => Effect.Effect<Live>
     /**
      * Progress sink. The reviewer stage runs inside this call, so without a record emitted before it
      * a caller cannot distinguish "no reviewer ran" from "a reviewer is deciding right now".
@@ -57,14 +77,13 @@ export namespace KiloSecurityGate {
     )
   })
 
-  const run = Effect.fn("KiloSecurityGate.run")(function* (input: Input) {
-    const snapshot = yield* SecurityAuthority.snapshot(input.config)
-
+  /** Fold the XDG floor over every resolved pattern. Pure over its inputs, so it can be re-run. */
+  function fold(permission: string, resolved: readonly Resolved[], snapshot: SecurityAuthority.Snapshot) {
     let floor: SecurityAuthority.Floor = { action: "allow", authority: "untrusted", conflict: false }
     let raised = false
-    for (const entry of input.resolved) {
+    for (const entry of resolved) {
       const current = SecurityAuthority.floor({
-        permission: input.permission,
+        permission,
         pattern: entry.pattern,
         effective: entry.action,
         xdg: snapshot.rules,
@@ -74,6 +93,12 @@ export namespace KiloSecurityGate {
       if (rank(current.action) > rank(floor.action)) floor = current
       else if (current.conflict) floor = { ...floor, conflict: true }
     }
+    return { floor, raised }
+  }
+
+  const run = Effect.fn("KiloSecurityGate.run")(function* (input: Input) {
+    const snapshot = yield* SecurityAuthority.snapshot(input.config)
+    const { floor, raised } = fold(input.permission, input.resolved, snapshot)
 
     const directive = SecurityDecisionAdapter.evaluate(
       {
@@ -104,7 +129,39 @@ export namespace KiloSecurityGate {
       } satisfies SecurityDecisionAdapter.Directive
     }
 
-    return yield* narrow(directive, input, floor)
+    // The state this decision was actually made against. It is built from the values `run` just
+    // read, not from a second read of the same input, so it is the true "before" of the comparison.
+    const before = SecurityAuthorization.version({
+      sessionID: input.sessionID,
+      agent: input.agent,
+      humanOnly: input.humanOnly,
+      floor,
+      raised,
+      resolved: input.resolved,
+      xdg: snapshot.rules,
+      failed: snapshot.failed,
+      containment: input.containment ?? UNKNOWN_CONTAINMENT,
+    })
+    return yield* narrow(directive, input, floor, before)
+  })
+
+  /** Re-read every live source and fold it into the comparable version again. */
+  const current = Effect.fn("KiloSecurityGate.current")(function* (input: Input) {
+    const live = input.live ? yield* input.live() : undefined
+    const resolved = live?.resolved ?? input.resolved
+    const snapshot = yield* SecurityAuthority.snapshot(input.config)
+    const { floor, raised } = fold(input.permission, resolved, snapshot)
+    return SecurityAuthorization.version({
+      sessionID: input.sessionID,
+      agent: live?.agent ?? input.agent,
+      humanOnly: live?.humanOnly ?? input.humanOnly,
+      floor,
+      raised,
+      resolved,
+      xdg: snapshot.rules,
+      failed: snapshot.failed,
+      containment: live?.containment ?? input.containment ?? UNKNOWN_CONTAINMENT,
+    })
   })
 
   /**
@@ -116,6 +173,7 @@ export namespace KiloSecurityGate {
     directive: SecurityDecisionAdapter.Directive,
     input: Input,
     floor: SecurityAuthority.Floor,
+    before: string,
   ) {
     if (directive.decision !== "ask" || !directive.reviewable || !directive.review) return directive
     if (input.humanOnly || floor.conflict) return directive
@@ -143,6 +201,25 @@ export namespace KiloSecurityGate {
       },
       directive.review,
     )
+
+    // A verdict only narrows the call it was asked about. If any of the state that produced the
+    // question moved while the model was answering, the answer is about a different call: keep the
+    // deterministic ask. An unreadable live state counts as changed, so this fails closed too.
+    if (reviewed.result.decision === "allow") {
+      const after = yield* current(input).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+      if (after !== before)
+        return {
+          ...directive,
+          audit: {
+            ...directive.audit,
+            reviewer: {
+              state: "keep_ask" as const,
+              reason_code: SecurityAuthorization.CHANGED,
+              ...(reviewed.outcome.latency_ms !== undefined ? { latency_ms: reviewed.outcome.latency_ms } : {}),
+            },
+          },
+        } satisfies SecurityDecisionAdapter.Directive
+    }
 
     return {
       ...directive,
