@@ -132,6 +132,10 @@ export type Entry = (typeof ENTRIES)[number]
  * action. Both halves are required: a route-equivalence regression that only compares `rule_id`
  * passes while the layer quietly stops enforcing, and a damage classification alone cannot tell a
  * mandatory human boundary from one a reviewer may narrow.
+ *
+ * `reviewer_called` is recorded under the `always_allow` reviewer, the adversarial control. Under
+ * that mode a `false` here is a claim — the boundary is mandatory and no reviewer is offered it —
+ * rather than an artefact of running with no reviewer bound at all.
  */
 export type A1Expectation = Readonly<{
   decision: "allow" | "ask" | "deny" | "pass"

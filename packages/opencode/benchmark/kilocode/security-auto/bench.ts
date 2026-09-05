@@ -2,6 +2,15 @@ import path from "node:path"
 import { appendFile, mkdir } from "node:fs/promises"
 import { parseArgs } from "node:util"
 import { agents, lane1, load, ROOT } from "./cases"
+import {
+  REVIEWER_MODES,
+  compareReviewers,
+  reviewerPopulation,
+  disposeA1,
+  runA1Suite,
+  summarizeA1,
+  type ReviewerMode,
+} from "./lane-a1"
 import { list, get } from "./profiles"
 import { invalid, markdown, summarize, read, type Episode } from "./report"
 import { CLI, PKG, cleanenv, run as episode, type Job } from "./runner"
@@ -28,6 +37,10 @@ const parsed = parseArgs({
     "provider-config": { type: "string" },
     "wall-seconds": { type: "string" },
     "human-seconds": { type: "string", default: "15" },
+    // Defaults to the deterministic baseline. A run that did not ask for a reviewer must not get
+    // one: standing a permissive reviewer behind the layer by default would report a more
+    // autonomous system than the caller asked to measure.
+    reviewer: { type: "string", default: "off" },
   },
 })
 
@@ -128,6 +141,9 @@ async function pool(jobs: Job[], workers: number, out: string, human: number) {
 function help() {
   process.stdout.write(`Security auto-mode benchmark\n\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts validate\n`)
+  process.stdout.write(
+    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a1 [--reviewer MODE] [--out dir]\n`,
+  )
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts coverage [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts profiles\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts doctor\n`)
@@ -138,7 +154,8 @@ function help() {
     `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts report --input results/episodes.jsonl\n\n`,
   )
   process.stdout.write(
-    `Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id[,id...] --out dir --keep\n`,
+    `Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id[,id...] --out dir --keep\n` +
+      `         --reviewer off|always_allow|always_keep|malformed|timeout\n`,
   )
   process.stdout.write(`         --provider-config file.json --wall-seconds N --human-seconds N\n`)
 }
@@ -211,6 +228,40 @@ async function main() {
         `(${a1.filter((item) => item.kind === "attack").length} attack, ${a1.filter((item) => item.kind === "benign").length} benign), ` +
         `${mapped.classes} threat classes, ${mapped.routes} routes, ${mapped.deferred} deferred groups, ${mapped.gaps} known gaps\n`,
     )
+    return
+  }
+  if (command === "a1") {
+    const requested = REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
+    if (!requested) throw new Error(`--reviewer must be one of ${REVIEWER_MODES.join(", ")}`)
+    const items = lane1(cases)
+    const modes = requested === "off" ? (["off"] as const) : ([("off" as const), requested] as const)
+    const runs = new Map<ReviewerMode, Awaited<ReturnType<typeof runA1Suite>>>()
+    try {
+      for (const mode of modes) runs.set(mode, await runA1Suite(items, mode))
+    } finally {
+      await disposeA1()
+    }
+    const summary = summarizeA1(items, runs.get(requested)!)
+    const population = reviewerPopulation(items, runs.get(requested)!)
+    const report = {
+      schema: "kilo.security-bench-a1/v1",
+      created_at: new Date().toISOString(),
+      git_sha: sha(),
+      dirty: dirty(),
+      bun: Bun.version,
+      platform: process.platform,
+      reviewer_mode: requested,
+      summary,
+      reviewer_population: population,
+      ...(requested === "off" ? {} : { delta_from_off: compareReviewers(items, runs.get("off")!, runs.get(requested)!) }),
+    }
+    // Always a file. The permission scan logs resolved paths to stdout, so a report printed there
+    // would arrive interleaved with them and unparseable.
+    const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
+    await mkdir(out, { recursive: true })
+    const file = path.join(out, `a1-${requested}.json`)
+    await Bun.write(file, JSON.stringify(report, null, 2) + "\n")
+    process.stderr.write(`[bench] A1 reviewer=${requested} -> ${file}\n`)
     return
   }
   if (command === "coverage") {
