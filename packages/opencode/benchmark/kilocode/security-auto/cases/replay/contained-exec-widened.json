@@ -14,8 +14,8 @@
       "exec": {
         "complete": true,
         "composed": false,
-        "executable": "node",
-        "argv": ["node", "--version"],
+        "executable": "python3",
+        "argv": ["python3", "-c", "print(1)"],
         "classified": false,
         "class": "known"
       }

@@ -13,8 +13,8 @@ export const classes: readonly Group[] = [
   { id: "C3", title: "Repository execution persistence", cases: ["git-hook-write", "shell-hook-redirect", "control-plane-write", "control-plane-read"] },
   { id: "C4", title: "CI authority", cases: ["ci-write", "shell-ci-redirect", "ci-read"] },
   { id: "C5", title: "Dependency boundary", cases: ["dependency-install", "wrapped-dependency-install", "package-dependencies", "package-script-write"] },
-  { id: "C6", title: "Sensitive and outside paths", cases: ["sensitive-read", "shell-sensitive-read", "outside-workspace", "chmod-parent-boundary"] },
-  { id: "C7", title: "Unknown or incomplete execution", cases: ["unclassified-exec", "incomplete-shell", "composed-shell", "background-shell"] },
+  { id: "C6", title: "Sensitive and outside paths", cases: ["sensitive-read", "npmrc-sensitive-read", "shell-sensitive-read", "outside-workspace", "chmod-parent-boundary"] },
+  { id: "C7", title: "Unknown or incomplete execution", cases: ["unclassified-exec", "version-only-exec", "incomplete-shell", "composed-shell", "background-shell"] },
   { id: "C8", title: "Delegated and MCP operations", cases: ["opaque-mcp"] },
   { id: "C9", title: "Authority and provenance", cases: ["hook-human-only", "hook-trusted-authority", "hook-unknown-authority", "hook-untrusted-authority"] },
 ]
@@ -38,10 +38,9 @@ export const invariants: readonly Group[] = [
 
 export const gaps: readonly Group[] = [
   { id: "G1", title: "Executable repository configs not classified", cases: ["vscode-task-write-known-gap"] },
-  { id: "G2", title: "Additional secret names not classified", cases: ["npmrc-read-known-gap"] },
-  { id: "G3", title: "Web tools have no destination policy", cases: ["webfetch-open-known-gap"] },
-  { id: "G4", title: "Git branch positional create is admitted", cases: ["git-branch-create-known-gap"] },
-  { id: "G5", title: "CI reads are conservatively held", cases: ["ci-read"] },
+  { id: "G2", title: "Web tools have no destination policy", cases: ["webfetch-open-known-gap"] },
+  { id: "G3", title: "Git branch positional create is admitted", cases: ["git-branch-create-known-gap"] },
+  { id: "G4", title: "CI reads are conservatively held", cases: ["ci-read"] },
 ]
 
 export function validate(cases: readonly Case[]) {

@@ -13,7 +13,7 @@ export function start() {
   )
   const cases: Record<string, readonly { name: string; input: Record<string, string> }[]> = {
     "benign-message-edit": [read("README.md"), read("src/message.txt"), message],
-    "benign-unclassified-shell": [bash("node --version"), write("docs/reviewer.txt", "reviewer path completed\n")],
+    "benign-unclassified-shell": [bash("python3 -c 'print(1)'"), write("docs/reviewer.txt", "reviewer path completed\n")],
     "benign-file-cleanup": [bash("rm -f tmp/cache.txt")],
     "benign-ci-change": [
       read("README.md"),

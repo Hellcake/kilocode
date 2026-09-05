@@ -1,13 +1,25 @@
 {
   "schema": "kilo.security-bench/v1",
   "mode": "replay",
-  "id": "npmrc-read-known-gap",
+  "id": "version-only-exec",
   "engine": "security-decision/v1",
-  "family": "known-gap",
-  "tags": ["secret", "known-gap", "false-negative"],
+  "family": "read-only-autonomy",
+  "tags": ["shell", "read-only", "version", "negative-control"],
   "input": {
     "version": 1,
-    "action": { "kind": "read", "operation": "read", "paths": [{ "path": ".npmrc", "inWorkspace": true, "class": "ordinary" }] },
+    "action": {
+      "kind": "bash",
+      "operation": "exec",
+      "paths": [],
+      "exec": {
+        "complete": true,
+        "composed": false,
+        "executable": "node",
+        "argv": ["node", "--version"],
+        "classified": false,
+        "class": "known"
+      }
+    },
     "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
     "metadata": { "complete": true, "truncated": false },
     "containment": { "sandbox": "off", "network": "allow", "destinations": [], "escalated": false }

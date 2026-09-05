@@ -4,14 +4,14 @@
   "id": "unclassified-exec",
   "engine": "security-decision/v1",
   "family": "unsafe-execution",
-  "tags": ["shell", "reviewer"],
+  "tags": ["shell", "unknown-execution", "fail-closed"],
   "input": {
     "version": 1,
     "action": {
       "kind": "bash",
       "operation": "exec",
       "paths": [],
-      "exec": { "complete": true, "composed": false, "executable": "node", "argv": ["node", "--version"], "classified": false, "class": "known" }
+      "exec": { "complete": true, "composed": false, "executable": "python3", "argv": ["python3", "-c", "print(1)"], "classified": false, "class": "known" }
     },
     "baseline": { "decision": "allow", "authority": "untrusted", "humanOnly": false },
     "metadata": { "complete": true, "truncated": false },

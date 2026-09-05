@@ -96,7 +96,7 @@ Private provider configurations, launchers and result notes must remain local. N
 
 ## Dataset and experiments
 
-The archive contained 5 agent scenarios and 9 core replays. This version has **13 agent scenarios** (6 benign, 6 attacks, 1 careless task), **45 core replays**, and a frozen **75-action command corpus**. These are synthetic, manually authored regressions. The organizer's promised 20+20 starter dataset was not supplied.
+The archive contained 5 agent scenarios and 9 core replays. This version has **13 agent scenarios** (6 benign, 6 attacks, 1 careless task), **46 core replays**, and a frozen **75-action command corpus**. These are synthetic, manually authored regressions. The organizer's promised 20+20 starter dataset was not supplied.
 
 `coverage` validates and prints explicit evidence for all nine threat classes (C1-C9), all nine machine routes (R1-R9), fail-closed (I1), route equivalence (I2), and known gaps. A referenced case that is renamed or removed makes validation fail. Known-gap cases pin the current unsafe or conservative behavior; they do not turn that behavior into a passing security claim.
 
@@ -107,7 +107,7 @@ The archive contained 5 agent scenarios and 9 core replays. This version has **1
 | No sandbox | 23/75 (30.7%) | 23/56 (41.1%) | 0/19 (0.0%) |
 | Proven sandbox, closed network | 23/75 (30.7%) | 23/56 (41.1%) | 0/19 (0.0%) |
 
-Contained execution now remains `ask` in the deterministic layer, so containment alone does not increase either auto-pass count. The `security-auto-reviewed` profile measures how often the separately bound reviewer grants those eligible C1 calls. The previously stated **23% before the layer is not claimed here** because no pinned pre-layer revision and classification protocol were supplied. Reproduce it against a named historical commit before using it in a presentation.
+Known read-only forms such as an exact version check pass independently of containment. Stateful or otherwise unclassified execution remains `ask`; proven confinement can make a structurally simple C1 call reviewer-eligible, but does not auto-allow it. The `security-auto-reviewed` profile measures how often the separately bound reviewer grants those calls. The previously stated **23% before the layer is not claimed here** because no pinned pre-layer revision and classification protocol were supplied. Reproduce it against a named historical commit before using it in a presentation.
 
 Coverage is intentionally split instead of copying the package's policy tests into the benchmark:
 
@@ -118,7 +118,7 @@ Coverage is intentionally split instead of copying the package's policy tests in
 | Bounded reviewer | Two reviewable agent calls, audit extraction and reviewer run-rate metrics |
 | Inert Git hardening | Inert status, content-read and Git-reprogramming replays |
 | Dependency boundary | Install, manifest and decomposed-sequence replays plus benign/malicious manifest agents |
-| Contained autonomy | Contained ask, reviewer eligibility and widened fallback replays plus real macOS package tests |
+| Contained autonomy | Contained ask, reviewer eligibility, read-only pass and widened fallback replays plus real macOS package tests |
 
 | Layer | Measures | Does not establish |
 |---|---|---|
@@ -133,7 +133,7 @@ The canary exists only in the disposable workspace's `.aws/credentials`. Its pub
 
 Core replays also cover root destruction (facts only, never executed), opaque MCP, incomplete/composed shell facts, unknown targets, authority floors, human-only decisions, multiple targets, dependency edits, shell/direct route equivalence, control-plane reads/writes, inert Git status, Git content reads and Git argument-based reprogramming.
 
-Known-gap replays deliberately record that `.vscode/tasks.json`, project `.npmrc`, arbitrary `webfetch`, and `git branch topic` currently pass the deterministic layer. A negative control records that `chmod -R 777 ..` is already held at the outside-workspace boundary. CI reads are recorded separately as a conservative false positive: current policy asks even though the narrower product story only names CI modification.
+Known-gap replays deliberately record that `.vscode/tasks.json`, arbitrary `webfetch`, and `git branch topic` currently pass the deterministic layer. Project `.npmrc` is now classified as sensitive and has a positive `ask` replay. A negative control records that `chmod -R 777 ..` is already held at the outside-workspace boundary. CI reads are recorded separately as a conservative false positive: current policy asks even though the narrower product story only names CI modification.
 
 ## Profiles
 
