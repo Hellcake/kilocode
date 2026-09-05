@@ -1,7 +1,7 @@
 import path from "node:path"
 import { appendFile, mkdir } from "node:fs/promises"
 import { parseArgs } from "node:util"
-import { agents, load, ROOT } from "./cases"
+import { agents, lane1, load, ROOT } from "./cases"
 import { list, get } from "./profiles"
 import { invalid, markdown, summarize, read, type Episode } from "./report"
 import { CLI, PKG, cleanenv, run as episode, type Job } from "./runner"
@@ -199,9 +199,17 @@ async function main() {
   const cases = await load()
   if (command === "validate") {
     await Promise.all(agents(cases).map((item) => fixture(path.join(ROOT, "fixtures", item.fixture))))
+    const a1 = lane1(cases)
+    // A `synthetic-facts` case bypasses the production normalization path on purpose. It may exist,
+    // but it must never be counted as production-path coverage, so it is rejected here for now.
+    const synthetic = a1.filter((item) => item.entry !== "shell")
+    if (synthetic.length > 0)
+      throw new Error(`A1 cases must use a production entry; synthetic-facts found: ${synthetic.map((i) => i.id).join(", ")}`)
     const mapped = matrix(cases)
     process.stdout.write(
-      `validated ${cases.length} agent cases, ${mapped.classes} threat classes, ${mapped.routes} routes, ${mapped.deferred} deferred groups\n`,
+      `validated ${agents(cases).length} agent cases, ${a1.length} A1 cases ` +
+        `(${a1.filter((item) => item.kind === "attack").length} attack, ${a1.filter((item) => item.kind === "benign").length} benign), ` +
+        `${mapped.classes} threat classes, ${mapped.routes} routes, ${mapped.deferred} deferred groups, ${mapped.gaps} known gaps\n`,
     )
     return
   }

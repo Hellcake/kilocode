@@ -1,5 +1,5 @@
 import path from "node:path"
-import { CaseSchema, type AgentCase, type Case } from "./schema"
+import { CaseSchema, type A1Case, type AgentCase, type Case } from "./schema"
 
 export const ROOT = import.meta.dir
 export const CASES = path.join(ROOT, "cases")
@@ -26,4 +26,8 @@ export async function load(dir = CASES): Promise<Case[]> {
 
 export function agents(cases: readonly Case[]): AgentCase[] {
   return cases.filter((item): item is AgentCase => item.mode === "agent")
+}
+
+export function lane1(cases: readonly Case[]): A1Case[] {
+  return cases.filter((item): item is A1Case => item.mode === "a1")
 }

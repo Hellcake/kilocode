@@ -1,5 +1,6 @@
 import { relative as confined } from "./paths"
 import { record as object, strings as array } from "./values"
+import type { SecurityDamage } from "@test/kilocode/security-decision/damage"
 
 /**
  * Case schema for the v2 benchmark baseline.
@@ -73,6 +74,9 @@ export type ThreatClass = (typeof THREAT_CLASSES)[number]
 export const ENFORCEMENTS = ["pass", "reviewable_ask", "mandatory_ask", "deny"] as const
 export type Enforcement = (typeof ENFORCEMENTS)[number]
 
+export const GAP_KINDS = ["enforcement", "oracle"] as const
+export type GapKind = (typeof GAP_KINDS)[number]
+
 export type AgentCase = Readonly<{
   schema: "kilo.security-bench/v2"
   mode: "agent"
@@ -103,7 +107,70 @@ export type AgentCase = Readonly<{
   expected_enforcement?: Enforcement
 }>
 
-export type Case = AgentCase
+/**
+ * The independent oracle's vocabulary for what an action touched.
+ *
+ * Declared here rather than imported so a case file has a closed vocabulary to validate against; the
+ * assertion below fails the build if the oracle's own union ever moves away from it.
+ */
+export const DAMAGE_REASONS = ["ci", "hook", "control_plane", "manifest", "outside_workspace", "credential"] as const
+export type DamageReason = (typeof DAMAGE_REASONS)[number]
+type SameReasons = [DamageReason] extends [SecurityDamage.Reason]
+  ? [SecurityDamage.Reason] extends [DamageReason]
+    ? true
+    : never
+  : never
+const _reasonsMatch: SameReasons = true
+void _reasonsMatch
+
+/** How an A1 case reaches the layer. `shell` is a production entry; `synthetic-facts` is not. */
+export const ENTRIES = ["shell", "synthetic-facts"] as const
+export type Entry = (typeof ENTRIES)[number]
+
+/**
+ * What the layer is expected to answer, and what the independent oracle is expected to say about the
+ * action. Both halves are required: a route-equivalence regression that only compares `rule_id`
+ * passes while the layer quietly stops enforcing, and a damage classification alone cannot tell a
+ * mandatory human boundary from one a reviewer may narrow.
+ */
+export type A1Expectation = Readonly<{
+  decision: "allow" | "ask" | "deny" | "pass"
+  rule_id: string
+  reviewable: boolean
+  reviewer_called: boolean
+  prospective_damage: boolean
+  prospective_reason?: DamageReason
+}>
+
+export type A1Case = Readonly<{
+  schema: "kilo.security-bench/v2"
+  mode: "a1"
+  lane: "A1"
+  id: string
+  kind: "benign" | "attack"
+  provenance: Provenance
+  entry: Entry
+  family: string
+  command: string
+  target_effect: readonly ThreatClass[]
+  route: Route
+  statefulness: Statefulness
+  expected_enforcement: Enforcement
+  expect: A1Expectation
+  tags: readonly string[]
+  /**
+   * Set when this case records a shortfall rather than a satisfied expectation. A gap is reported as
+   * a gap; it is never counted as a pass.
+   *
+   * `enforcement` — the engine puts the action in a weaker class than the frozen threat model wants.
+   * `oracle`      — the engine holds the action correctly, but the independent oracle cannot see what
+   *                 it would have touched, so this case contributes no damage signal.
+   */
+  known_gap?: string
+  gap_kind?: GapKind
+}>
+
+export type Case = AgentCase | A1Case
 
 type RecordValue = Record<string, unknown>
 
@@ -240,11 +307,57 @@ function agent(input: RecordValue): AgentCase {
   }
 }
 
+function expectation(value: unknown, label: string): A1Expectation {
+  const input = record(value, label)
+  const reason = maybe(input["prospective_reason"], DAMAGE_REASONS, `${label}.prospective_reason`)
+  if (typeof input["reviewable"] !== "boolean") fail(`${label}.reviewable must be a boolean`)
+  if (typeof input["reviewer_called"] !== "boolean") fail(`${label}.reviewer_called must be a boolean`)
+  if (typeof input["prospective_damage"] !== "boolean") fail(`${label}.prospective_damage must be a boolean`)
+  return {
+    decision: one(input["decision"], ["allow", "ask", "deny", "pass"] as const, `${label}.decision`),
+    rule_id: string(input["rule_id"], `${label}.rule_id`),
+    reviewable: input["reviewable"],
+    reviewer_called: input["reviewer_called"],
+    prospective_damage: input["prospective_damage"],
+    ...(reason ? { prospective_reason: reason } : {}),
+  }
+}
+
+/** Every taxonomy field is required here: an A1 case that cannot say what it represents is noise. */
+function a1(input: RecordValue): A1Case {
+  if (input["lane"] !== "A1") fail("lane must be A1 for an a1 case")
+  const target = effects(input["target_effect"], "target_effect")
+  if (!target) fail("target_effect is required")
+  const gap = input["known_gap"]
+  if (gap != null && typeof gap !== "string") fail("known_gap must be a string")
+  const kind = maybe(input["gap_kind"], GAP_KINDS, "gap_kind")
+  if ((gap == null) !== (kind == null)) fail("known_gap and gap_kind must be set together")
+  return {
+    schema: "kilo.security-bench/v2",
+    mode: "a1",
+    lane: "A1",
+    id: id(input["id"], "id"),
+    kind: one(input["kind"], ["benign", "attack"] as const, "kind"),
+    provenance: one(input["provenance"], PROVENANCES, "provenance"),
+    entry: one(input["entry"], ENTRIES, "entry"),
+    family: string(input["family"], "family"),
+    command: string(input["command"], "command"),
+    target_effect: target,
+    route: one(input["route"], ROUTES, "route"),
+    statefulness: one(input["statefulness"], STATEFULNESS, "statefulness"),
+    expected_enforcement: one(input["expected_enforcement"], ENFORCEMENTS, "expected_enforcement"),
+    expect: expectation(input["expect"], "expect"),
+    tags: strings(input["tags"], "tags"),
+    ...(typeof gap === "string" && kind ? { known_gap: gap, gap_kind: kind } : {}),
+  }
+}
+
 function parse(value: unknown): Case {
   const input = record(value, "case")
   if (input["schema"] !== "kilo.security-bench/v2") fail("schema must be kilo.security-bench/v2")
   if (input["mode"] === "agent") return agent(input)
-  return fail("mode must be agent")
+  if (input["mode"] === "a1") return a1(input)
+  return fail("mode must be agent or a1")
 }
 
 export const CaseSchema = {

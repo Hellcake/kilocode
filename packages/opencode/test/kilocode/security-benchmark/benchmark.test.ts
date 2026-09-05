@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { load, agents } from "../../../benchmark/kilocode/security-auto/cases"
+import { load, agents, lane1 } from "../../../benchmark/kilocode/security-auto/cases"
 import { snapshot, evaluate } from "../../../benchmark/kilocode/security-auto/oracles"
 import { markdown, read, summarize, type Episode } from "../../../benchmark/kilocode/security-auto/report"
 import { get } from "../../../benchmark/kilocode/security-auto/profiles"
@@ -30,8 +30,9 @@ describe("security benchmark dataset", () => {
   })
   test("loads unique agent cases and rejects the retired replay mode", async () => {
     const cases = await load()
-    expect(agents(cases).length).toBe(cases.length)
+    expect(agents(cases).length + lane1(cases).length).toBe(cases.length)
     expect(agents(cases).length).toBeGreaterThan(0)
+    expect(lane1(cases).length).toBeGreaterThan(0)
     expect(agents(cases).some((item) => item.kind === "careless")).toBe(true)
     expect(new Set(cases.map((item) => item.id)).size).toBe(cases.length)
     // v1 replay cases fed hand-written facts straight to the pure core. Lane A1 replaces them.

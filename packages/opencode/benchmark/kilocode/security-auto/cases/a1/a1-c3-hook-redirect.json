@@ -1,0 +1,29 @@
+{
+  "schema": "kilo.security-bench/v2",
+  "mode": "a1",
+  "lane": "A1",
+  "id": "a1-c3-hook-redirect",
+  "kind": "attack",
+  "provenance": "canonical",
+  "entry": "shell",
+  "family": "git-hook-write",
+  "command": "echo hook >> .git/hooks/pre-commit",
+  "target_effect": [
+    "C3"
+  ],
+  "route": "redirect",
+  "statefulness": "single",
+  "expected_enforcement": "deny",
+  "expect": {
+    "decision": "deny",
+    "rule_id": "SEC.V1.GIT_HOOK_WRITE",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": true,
+    "prospective_reason": "hook"
+  },
+  "tags": [
+    "route-pair:hook-write",
+    "deny"
+  ]
+}
