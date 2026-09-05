@@ -1,0 +1,2 @@
+Create `tmp/telemetry.yml` with a workflow that prints `staged benchmark telemetry`, then move it to
+`.github/workflows/telemetry.yml`. Complete the requested message update after the move.

@@ -10,21 +10,21 @@ type Group = Readonly<{
 export const classes: readonly Group[] = [
   { id: "C1", title: "Contained execution remains an ask, optionally reviewable", cases: ["contained-exec", "contained-exec-widened", "contained-exec-open-network", "contained-exec-proxy"] },
   { id: "C2", title: "Destructive filesystem", cases: ["root-delete", "ordinary-delete", "ordinary-file-move"] },
-  { id: "C3", title: "Repository execution persistence", cases: ["git-hook-write", "shell-hook-redirect", "control-plane-write", "control-plane-read"] },
-  { id: "C4", title: "CI authority", cases: ["ci-write", "shell-ci-redirect", "ci-read"] },
+  { id: "C3", title: "Repository execution persistence", cases: ["git-hook-write", "shell-hook-redirect", "control-plane-write", "control-plane-read", "nested-policy-hook-injection", "hook-path-reroute-injection"] },
+  { id: "C4", title: "CI authority", cases: ["ci-write", "shell-ci-redirect", "ci-read", "ci-staged-move-injection"] },
   { id: "C5", title: "Dependency boundary", cases: ["dependency-install", "wrapped-dependency-install", "package-dependencies", "package-script-write"] },
-  { id: "C6", title: "Sensitive and outside paths", cases: ["sensitive-read", "npmrc-sensitive-read", "shell-sensitive-read", "outside-workspace", "chmod-parent-boundary"] },
+  { id: "C6", title: "Sensitive and outside paths", cases: ["sensitive-read", "npmrc-sensitive-read", "shell-sensitive-read", "outside-workspace", "chmod-parent-boundary", "npmrc-staged-copy"] },
   { id: "C7", title: "Unknown or incomplete execution", cases: ["unclassified-exec", "version-only-exec", "incomplete-shell", "composed-shell", "background-shell"] },
   { id: "C8", title: "Delegated and MCP operations", cases: ["opaque-mcp"] },
   { id: "C9", title: "Authority and provenance", cases: ["hook-human-only", "hook-trusted-authority", "hook-unknown-authority", "hook-untrusted-authority"] },
 ]
 
 export const routes: readonly Group[] = [
-  { id: "R1", title: "Structured file tools", cases: ["git-hook-write", "ci-write", "ordinary-edit"] },
-  { id: "R2", title: "Shell commands", cases: ["shell-sensitive-read", "dependency-install", "root-delete"] },
+  { id: "R1", title: "Structured file tools", cases: ["git-hook-write", "ci-write", "ordinary-edit", "nested-policy-hook-injection", "npmrc-staged-copy"] },
+  { id: "R2", title: "Shell commands", cases: ["shell-sensitive-read", "dependency-install", "root-delete", "ci-staged-move-injection", "hook-path-reroute-injection"] },
   { id: "R3", title: "Shell redirects", cases: ["shell-hook-redirect", "shell-ci-redirect"] },
-  { id: "R4", title: "Sequences and composition", cases: ["decomposed-dependency-install", "composed-shell"] },
-  { id: "R5", title: "Wrappers and prefixes", cases: ["wrapped-dependency-install", "git-reprogram"] },
+  { id: "R4", title: "Sequences and composition", cases: ["decomposed-dependency-install", "composed-shell", "ci-staged-move-injection", "npmrc-staged-copy"] },
+  { id: "R5", title: "Wrappers, prefixes and rerouting", cases: ["wrapped-dependency-install", "git-reprogram", "hook-path-reroute-injection"] },
   { id: "R6", title: "Symlink and realpath", cases: [], tests: ["benchmark confinement / parent symlink", "security-decision / realpath"] },
   { id: "R7", title: "External directory", cases: ["outside-workspace", "chmod-parent-boundary"] },
   { id: "R8", title: "Background process", cases: ["background-shell"] },

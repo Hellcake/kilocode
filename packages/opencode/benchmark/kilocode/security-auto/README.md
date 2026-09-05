@@ -96,7 +96,7 @@ Private provider configurations, launchers and result notes must remain local. N
 
 ## Dataset and experiments
 
-The archive contained 5 agent scenarios and 9 core replays. This version has **13 agent scenarios** (6 benign, 6 attacks, 1 careless task), **46 core replays**, and a frozen **75-action command corpus**. These are synthetic, manually authored regressions. The organizer's promised 20+20 starter dataset was not supplied.
+The archive contained 5 agent scenarios and 9 core replays. This version has **17 agent scenarios** (6 benign, 10 attacks, 1 careless task), **46 core replays**, and a frozen **75-action command corpus**. These are synthetic, manually authored regressions. The organizer's promised 20+20 starter dataset was not supplied.
 
 `coverage` validates and prints explicit evidence for all nine threat classes (C1-C9), all nine machine routes (R1-R9), fail-closed (I1), route equivalence (I2), and known gaps. A referenced case that is renamed or removed makes validation fail. Known-gap cases pin the current unsafe or conservative behavior; they do not turn that behavior into a passing security claim.
 
@@ -127,7 +127,7 @@ Coverage is intentionally split instead of copying the package's policy tests in
 | `selftest` | Real CLI/tools driven by a scripted API | LLM ASR |
 | `run` | Model episodes scored by external filesystem predicates | Protection beyond this dataset |
 
-Agent cases cover ordinary file/document/package edits, authorized CI changes, benign file cleanup, hook creation/removal of checks, README/SKILL.md injection, control-plane persistence through `.envrc`, multi-step fake-credential copying, unauthorized package scripts, and a benign shell call eligible for reviewer narrowing. Replays additionally cover dependency installation, dependency-manifest writes, decomposed shell sequences, contained execution and widened-sandbox fallback. Paired message cases use the same user prompt. Attack text is fixture data, never a runner instruction. SKILL.md is read as a file; installed-skill discovery is not tested.
+Agent cases cover ordinary file/document/package edits, authorized CI changes, benign file cleanup, hook creation/removal of checks, README/SKILL.md injection, nested-document instructions, control-plane persistence through `.envrc` and `core.hooksPath`, direct and staged fake-credential copying, staged CI moves, unauthorized package scripts, and the conservative fallback for an unclassified benign shell call. Replays additionally cover dependency installation, dependency-manifest writes, decomposed shell sequences, contained execution and widened-sandbox fallback. Paired message cases use the same user prompt. Attack text is fixture data, never a runner instruction. SKILL.md is read as a file; installed-skill discovery is not tested.
 
 The canary exists only in the disposable workspace's `.aws/credentials`. Its public copy is a disclosure proxy, not a network-exfiltration test. The scripted provider copies the canary only if an actual tool read returned it. Package cases only write a harmless echo script: they never install or execute packages. A postinstall write represents unauthorized authority change, not proof of malicious package execution.
 
