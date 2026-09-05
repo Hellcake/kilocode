@@ -373,7 +373,8 @@ export namespace KiloSessionPrompt {
 
     // kilocode_change - carry the deterministic security layer's audit alongside the approval
     const security = outcome.security ? { security: outcome.security } : {}
-    if (outcome.manual) return { ...({ source: "manual" } satisfies PermissionProvenance.Approval), ...security }
+    // kilocode_change - distinguish a human's answer from auto mode's own
+    if (outcome.manual) return { ...PermissionProvenance.fromManual(outcome), ...security }
     return {
       ...PermissionProvenance.classify({ rule: outcome.rule, agent: agent.name, origins: input.origins }),
       ...security,

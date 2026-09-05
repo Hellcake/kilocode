@@ -52,6 +52,9 @@ import { IconButton } from "./icon-button"
 import { TextShimmer } from "@opencode-ai/ui/text-shimmer"
 import { ToolApprovalProvider, resolveToolApproval, useToolApproval } from "./tool-approval"
 export { ToolApprovalProvider, resolveToolApproval, ToolApprovalVisibilityProvider } from "./tool-approval"
+// kilocode_change - the security layer's state for the same call, alongside the approval
+import { ToolSecurityProvider, resolveSecurityStatus } from "./tool-security"
+export { ToolSecurityProvider, resolveSecurityStatus } from "./tool-security"
 import { GrowBox } from "./grow-box"
 import { COLLAPSIBLE_SPRING } from "./motion"
 import { busy, createThrottledValue, useToolFade, useContextToolPending } from "./tool-utils"
@@ -1356,27 +1359,37 @@ PART_MAPPING["tool"] = function ToolPartDisplay(props) {
                 )
               }
             >
-              <Dynamic
-                component={render()}
-                input={input()}
-                tool={part.tool}
-                partID={part.id}
-                callID={part.callID}
-                metadata={meta()}
-                partMetadata={top()}
-                // @ts-expect-error
-                output={part.state.output}
-                status={part.state.status}
-                // @ts-expect-error
-                attachments={part.state.attachments}
-                hideDetails={props.hideDetails}
-                defaultOpen={props.defaultOpen}
-                forceOpen={props.forceOpen}
-                forceOpenFile={props.forceOpenFile}
-                animate
-                reveal={props.animate}
-                readonly={props.readonly}
-              />
+              {/* kilocode_change - the same metadata, read for the security layer's state */}
+              <ToolSecurityProvider
+                value={() =>
+                  resolveSecurityStatus(
+                    meta(),
+                    i18n.t as (k: string, p?: Record<string, string | number | boolean>) => string,
+                  )
+                }
+              >
+                <Dynamic
+                  component={render()}
+                  input={input()}
+                  tool={part.tool}
+                  partID={part.id}
+                  callID={part.callID}
+                  metadata={meta()}
+                  partMetadata={top()}
+                  // @ts-expect-error
+                  output={part.state.output}
+                  status={part.state.status}
+                  // @ts-expect-error
+                  attachments={part.state.attachments}
+                  hideDetails={props.hideDetails}
+                  defaultOpen={props.defaultOpen}
+                  forceOpen={props.forceOpen}
+                  forceOpenFile={props.forceOpenFile}
+                  animate
+                  reveal={props.animate}
+                  readonly={props.readonly}
+                />
+              </ToolSecurityProvider>
             </ToolApprovalProvider>
           </Match>
         </Switch>
@@ -2111,9 +2124,9 @@ ToolRegistry.register({
               animate={props.reveal}
               onClick={data.openFile ? () => data.openFile!(filepath) : undefined}
             />
-    )}
+          )}
         </For>
-      <Show when={images().length > 0}>
+        <Show when={images().length > 0}>
           <div data-slot="tool-read-images">
             <For each={images()}>
               {(file) => (
@@ -2846,24 +2859,26 @@ ToolRegistry.register({
       const diffs = files().flatMap((file) => {
         const diff = view(file)
         return diff
-          ? [{
-              file: file.relativePath,
-              patch: diff.patch,
-              status:
-                file.type === "add"
-                  ? ("added" as const)
-                  : file.type === "delete"
-                    ? ("deleted" as const)
-                    : ("modified" as const),
-              additions:
-                file.type === "add" && diff.additions === 0
-                  ? diff.fileDiff.hunks.reduce((sum, hunk) => sum + hunk.additionLines, 0)
-                  : diff.additions,
-              deletions:
-                file.type === "delete" && diff.deletions === 0
-                  ? diff.fileDiff.hunks.reduce((sum, hunk) => sum + hunk.deletionLines, 0)
-                  : diff.deletions,
-            }]
+          ? [
+              {
+                file: file.relativePath,
+                patch: diff.patch,
+                status:
+                  file.type === "add"
+                    ? ("added" as const)
+                    : file.type === "delete"
+                      ? ("deleted" as const)
+                      : ("modified" as const),
+                additions:
+                  file.type === "add" && diff.additions === 0
+                    ? diff.fileDiff.hunks.reduce((sum, hunk) => sum + hunk.additionLines, 0)
+                    : diff.additions,
+                deletions:
+                  file.type === "delete" && diff.deletions === 0
+                    ? diff.fileDiff.hunks.reduce((sum, hunk) => sum + hunk.deletionLines, 0)
+                    : diff.deletions,
+              },
+            ]
           : []
       })
       const first = diffs[0]
@@ -3012,11 +3027,7 @@ ToolRegistry.register({
                                       <span data-slot="apply-patch-directory">{`\u2066${getDirectory(file.relativePath)}\u2069`}</span>
                                     </Show>
 
-                                    <span
-                                      data-slot="apply-patch-filename"
-                                    >
-                                      {getFilename(file.relativePath)}
-                                    </span>
+                                    <span data-slot="apply-patch-filename">{getFilename(file.relativePath)}</span>
                                   </div>
                                 </div>
                                 <div data-slot="apply-patch-trigger-actions">

@@ -145,13 +145,40 @@ export namespace SecurityDecisionAdapter {
     }
   }
 
+  /** Files whose whole content is a long-lived credential. Matched by name, never by heuristic. */
+  const CREDENTIALS = new Set([
+    ".dockercfg",
+    ".git-credentials",
+    ".htpasswd",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".terraformrc",
+    "credentials",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "secrets.yaml",
+    "secrets.yml",
+    "service-account.json",
+  ])
+
+  /** Key and certificate stores, by extension. */
+  const KEYSTORES = [".jks", ".key", ".keystore", ".p12", ".pem", ".pfx"]
+
   function pathClass(target: string): T.PathClass {
     const base = path.posix.basename(target)
     if (/(^|\/)\.git\/hooks\//.test(target)) return "git_hook"
     // Control plane: hook redirection, filter drivers and direnv all install code that later runs.
+    // `.husky` and `.githooks` are where `core.hooksPath` points in a modern repository: a write
+    // there installs a hook just as a write to `.git/hooks` does. They ask rather than deny, because
+    // unlike `.git/hooks` these files are committed and edited by hand.
     if (
       /(^|\/)\.git\/config$/.test(target) ||
       /(^|\/)\.git\/info\/attributes$/.test(target) ||
+      /(^|\/)\.husky\//.test(target) ||
+      /(^|\/)\.githooks\//.test(target) ||
       base === ".gitattributes" ||
       base === ".envrc"
     )
@@ -162,12 +189,13 @@ export namespace SecurityDecisionAdapter {
     if (
       base === ".env" ||
       base.startsWith(".env.") ||
+      CREDENTIALS.has(base) ||
+      KEYSTORES.some((extension) => base.endsWith(extension)) ||
       /(^|\/)\.ssh\//.test(target) ||
       /(^|\/)\.aws\//.test(target) ||
-      base.endsWith(".pem") ||
-      base.endsWith(".key") ||
-      base === "credentials" ||
-      base === ".netrc"
+      /(^|\/)\.kube\//.test(target) ||
+      /(^|\/)\.docker\//.test(target) ||
+      /(^|\/)\.gnupg\//.test(target)
     )
       return "sensitive"
     return "ordinary"
@@ -364,6 +392,24 @@ export namespace SecurityDecisionAdapter {
   }
 
   /**
+   * Build systems whose arguments are labels rather than paths. In a label `//` is the *workspace*
+   * root, not the filesystem root, and the tool resolves it there — `bazel build //...` never
+   * reaches past the workspace however much the token looks absolute.
+   */
+  const LABEL_TOOLS = new Set(["bazel", "bazelisk", "buck", "buck2", "pants"])
+
+  /**
+   * The package a label names, workspace-relative, or undefined when the token is not a label. The
+   * package is still classified from there: a label is re-anchored, never waved through.
+   */
+  function label(token: string) {
+    // An optional repository or cell prefix (`@com_example//`, `cell//`), then the package, then
+    // the target after `:`. The prefix is anchored and slash-free, so a real path never matches.
+    const match = /^[A-Za-z0-9@._+-]*\/\/([^:]*)/.exec(token)
+    return match ? match[1] : undefined
+  }
+
+  /**
    * Path facts read off the command line itself.
    *
    * The effect table only names files for executables the scan knows, so an unknown reader — `xxd`,
@@ -380,13 +426,15 @@ export namespace SecurityDecisionAdapter {
     const out: T.PathFact[] = []
     const seen = new Set<string>()
     for (const unit of facts.commands && facts.commands.length > 0 ? facts.commands : [facts]) {
+      const labeled = unit.executable !== undefined && LABEL_TOOLS.has(unit.executable)
       // The executable's own name is not one of its arguments.
       for (const token of (unit.argv ?? []).slice(1)) {
         if (token.length === 0 || token.startsWith("-") || token.includes("://")) continue
         // `@file` is how curl and friends spell "read this file", and `key=value` is how `dd` and
         // its relatives spell an operand: in both the reference is the tail, not the whole token.
         const operand = /^[A-Za-z_][A-Za-z0-9_]*=(.+)$/.exec(token)
-        const named = token.startsWith("@") ? token.slice(1) : (operand?.[1] ?? token)
+        const named =
+          (labeled ? label(token) : undefined) ?? (token.startsWith("@") ? token.slice(1) : (operand?.[1] ?? token))
         const fact = classify(named, workspace)
         if (fact.class === "unknown") continue
         if (fact.class === "ordinary" && fact.inWorkspace) continue

@@ -10,7 +10,18 @@ import type { Permission } from "@/permission"
  */
 export namespace PermissionProvenance {
   /** Where the deciding rule came from. */
-  export type Source = "agent" | "global" | "project" | "yolo" | "session" | "manual" | "default"
+  export type Source = "agent" | "global" | "project" | "yolo" | "session" | "manual" | "auto" | "default"
+
+  /**
+   * Who answered a prompt that was actually raised.
+   *
+   * Auto mode replies from the client and omits `interactive`, so an approval nobody looked at is
+   * attributed to the mode rather than to the user — "approved by you" about a decision the user
+   * never made is worse than saying nothing.
+   */
+  export function fromManual(outcome: { interactive?: boolean }): Approval {
+    return { source: outcome.interactive === true ? "manual" : "auto" }
+  }
 
   /** A rule optionally carrying its origin. `source` is runtime-only, never persisted. */
   export type SourcedRule = Permission.Rule & { source?: Source }

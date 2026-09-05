@@ -41,7 +41,7 @@ import { appendTerminalOutput } from "@/kilocode/interactive-terminal/output" //
 import { at, recent, slot } from "../kilocode/message-order" // kilocode_change
 import { useToast } from "../ui/toast" // kilocode_change
 import { usePermission } from "./permission"
-import { SecurityAsk } from "@/kilocode/security-decision/ask" // kilocode_change
+import { PermissionHumanOnly } from "@/kilocode/permission/human-only" // kilocode_change
 
 const emptyConsoleState: ConsoleState = {
   consoleManagedProviders: [],
@@ -257,8 +257,9 @@ export const {
 
         case "permission.asked": {
           const request = event.properties
-          // kilocode_change - a security-raised ask is never auto-approved; it falls through to the human
-          if (permission.mode === "auto" && !SecurityAsk.is(request.metadata)) {
+          // kilocode_change - the server refuses a machine reply to these, so answering here would
+          // leave the prompt pending with nobody shown it; fall through and display it instead
+          if (permission.mode === "auto" && !PermissionHumanOnly.requires(request.metadata)) {
             void sdk.client.permission.reply({
               requestID: request.id,
               reply: "once",
@@ -837,11 +838,7 @@ export const {
               setStore("provider_default", reconcile(providers.default))
               setStore("provider_next", reconcile(providerList))
               // kilocode_change start - fail closed when the backend omits the capability
-              setStore(
-                "capabilities",
-                "experimentalBackgroundSubagents",
-                capabilities?.backgroundSubagents === true,
-              )
+              setStore("capabilities", "experimentalBackgroundSubagents", capabilities?.backgroundSubagents === true)
               // kilocode_change end
               setStore("console_state", reconcile(consoleState))
               setStore("agent", reconcile(agents))

@@ -20,6 +20,7 @@ import { ReadPermission } from "@/kilocode/permission/read"
 import { AgentManagerPermission } from "@/kilocode/permission/agent-manager" // kilocode_change
 import { ExternalDirectoryPermission } from "@/kilocode/permission/external-directory"
 import { KiloSecurityGate } from "@/kilocode/security-decision/gate"
+import { PermissionHumanOnly } from "@/kilocode/permission/human-only" // kilocode_change
 import { SecurityBlocked } from "@/kilocode/security-decision/block"
 import { SecurityDecisionAdapter } from "@/kilocode/security-decision/adapter"
 import { SecurityAsk } from "@/kilocode/security-decision/ask"
@@ -85,6 +86,8 @@ export interface AskOutcome {
   rule?: Rule
   /** Audit record of the deterministic security layer, when the feature flag is on. */
   security?: SecurityDecisionAdapter.Audit
+  /** For a manual outcome: whether a human actually answered, or a client replied on their behalf. */
+  readonly interactive?: boolean // kilocode_change
 }
 // kilocode_change end
 
@@ -110,6 +113,12 @@ interface PendingEntry {
    * answered rejection from a session teardown that fails every pending deferred at once.
    */
   rejection?: { interactive: boolean }
+  /**
+   * Set by `reply` when this request was approved, recording whether a human actually answered.
+   * Auto mode replies from the client without `interactive`, and an approval nobody looked at must
+   * not be reported back as one the user gave.
+   */
+  approval?: { interactive: boolean }
   // kilocode_change end
   deferred: Deferred.Deferred<void, RejectedError | CorrectedError>
 }
@@ -368,8 +377,15 @@ const layer = Layer.effect(
             pending.delete(id)
           }),
         ).pipe(Effect.exit)
-        if (Exit.isSuccess(exit))
-          return { manual: true, security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") }
+        if (Exit.isSuccess(exit)) {
+          // kilocode_change - the audit names the same answerer the approval marker does
+          const answered = entry.approval?.interactive === true
+          return {
+            manual: true,
+            interactive: answered,
+            security: SecurityDecisionAdapter.finalize(security.audit, "allow", answered ? "manual" : "auto"),
+          }
+        }
         // Only an answered rejection is enforcement; a session teardown keeps its existing semantics.
         if (!entry.rejection) return yield* Effect.failCause(exit.cause)
         const record = SecurityDecisionAdapter.finalize(
@@ -387,10 +403,30 @@ const layer = Layer.effect(
         Effect.sync(() => {
           pending.delete(id)
         }),
+      ).pipe(
+        // kilocode_change - a refusal ends this effect, so the audit has to be closed on the way out.
+        // The record written before the prompt was published says `ask_pending`, and leaving it there
+        // reports a call that will never run again as one still waiting for a human.
+        Effect.tapError(() =>
+          security && audit
+            ? audit(
+                SecurityDecisionAdapter.finalize(
+                  security.audit,
+                  entry.rejection?.interactive ? "reject" : "blocked",
+                  entry.rejection?.interactive ? "manual" : "auto",
+                ),
+              ).pipe(Effect.catchCause(() => Effect.void))
+            : Effect.void,
+        ),
       )
+      // kilocode_change - the audit names the same answerer the approval marker does
+      const answered = entry.approval?.interactive === true
       return {
         manual: true,
-        ...(security ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", "manual") } : {}),
+        interactive: answered,
+        ...(security
+          ? { security: SecurityDecisionAdapter.finalize(security.audit, "allow", answered ? "manual" : "auto") }
+          : {}),
       } // the user was prompted and replied
       // kilocode_change end
     })
@@ -405,9 +441,7 @@ const layer = Layer.effect(
       // Log rather than fail silently: a genuine human client sets `interactive`, so a refused reply here
       // means an auto-approver tried to answer — the request intentionally stays pending for a human.
       if (
-        (existing.info.metadata?.["skillShell"] === true ||
-          existing.info.metadata?.["sandboxEscalation"] === true ||
-          SecurityAsk.is(existing.info.metadata)) && // kilocode_change - a security-raised ask is never machine-approved
+        PermissionHumanOnly.requires(existing.info.metadata) && // kilocode_change - one predicate, shared with the clients
         input.reply !== "reject" &&
         input.interactive !== true
       ) {
@@ -448,6 +482,7 @@ const layer = Layer.effect(
         return
       }
 
+      existing.approval = { interactive: input.interactive === true } // kilocode_change
       yield* Deferred.succeed(existing.deferred, undefined)
       if (input.reply === "once") return
 

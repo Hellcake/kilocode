@@ -22,6 +22,7 @@ export namespace SecurityDecision {
   const INERT = new Set([
     "basename",
     "date",
+    "df",
     "dirname",
     "echo",
     "false",
@@ -30,11 +31,55 @@ export namespace SecurityDecision {
     "printf",
     "pwd",
     "sleep",
+    "tree",
     "true",
     "uname",
     "which",
     "whoami",
   ])
+
+  /**
+   * Toolchain binaries asked for nothing but their own version. The allowlist is over the executable
+   * *and* the exact single argument: `--version` is not a property of a command line, it is only
+   * inert when it is the whole of it. `node --version` prints a string; `node --version x` runs a
+   * script named `x`.
+   */
+  const VERSION_TOOLS = new Set([
+    "bun",
+    "cargo",
+    "clang",
+    "cmake",
+    "deno",
+    "docker",
+    "dotnet",
+    "gcc",
+    "go",
+    "java",
+    "javac",
+    "kubectl",
+    "make",
+    "node",
+    "npm",
+    "php",
+    "pnpm",
+    "python",
+    "python3",
+    "ruby",
+    "rustc",
+    "swift",
+    "terraform",
+    "tsc",
+    "yarn",
+  ])
+
+  const VERSION_FLAGS = new Set(["--version", "-V", "version"])
+
+  function versionOnly(unit: SecurityDecisionTypes.ExecCommandFact) {
+    const name = unit.executable
+    if (!name || !VERSION_TOOLS.has(name)) return false
+    const argv = unit.argv
+    return argv !== undefined && argv.length === 2 && VERSION_FLAGS.has(argv[1]!)
+  }
 
   /**
    * git is allowlisted by verb *and* arguments, never by verb alone.
@@ -172,6 +217,62 @@ export namespace SecurityDecision {
       ]),
       short: new Set(["a", "q", "r", "v"]),
     },
+    /** Stash subject lines. `stash` alone, or with another sub-verb, changes the working tree. */
+    "stash list": {
+      flags: new Set(["--", "--format", "--oneline", "--pretty", "-n"]),
+      short: new Set([]),
+      numeric: true,
+    },
+    /** The nearest tag. Prints a name. */
+    describe: {
+      flags: new Set(["--", "--abbrev", "--all", "--always", "--contains", "--exclude", "--long", "--match", "--tags"]),
+      short: new Set([]),
+    },
+    /** Commit counts and object names. `--header` prints more, so it is not here. */
+    "rev-list": {
+      flags: new Set([
+        "--",
+        "--all",
+        "--branches",
+        "--count",
+        "--first-parent",
+        "--max-count",
+        "--merges",
+        "--no-merges",
+        "--remotes",
+        "--reverse",
+        "--tags",
+        "-n",
+      ]),
+      short: new Set([]),
+      numeric: true,
+    },
+    /** Tag names. Listing only: naming a tag creates one. */
+    tag: {
+      flags: new Set([
+        "--",
+        "--contains",
+        "--format",
+        "--list",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+        "--sort",
+        "-l",
+      ]),
+      short: new Set(["l"]),
+      require: new Set(["--list", "-l"]),
+    },
+    /** Author counts. */
+    shortlog: {
+      flags: new Set(["--", "--email", "--numbered", "--summary", "-e", "-n", "-s"]),
+      short: new Set(["e", "n", "s"]),
+    },
+    /** Repository size. */
+    "count-objects": {
+      flags: new Set(["--", "--human-readable", "--verbose", "-H", "-v"]),
+      short: new Set(["H", "v"]),
+    },
     /** Tracked path names. */
     "ls-files": {
       flags: new Set([
@@ -206,17 +307,30 @@ export namespace SecurityDecision {
   }
 
   function inertGit(argv: readonly string[]) {
+    return matches(argv, GIT_GLOBALS, GIT_VERBS)
+  }
+
+  /**
+   * A verb-and-argument allowlist for a tool that dispatches on its first word. Global flags before
+   * the verb are refused unless explicitly listed, because that is where these tools let a caller
+   * redirect the whole operation somewhere else.
+   */
+  function matches(argv: readonly string[], globals: ReadonlySet<string>, verbs: Record<string, GitVerb>) {
     let index = 1
     // Global flags sit before the verb, and almost all of them can redirect or reprogram the run.
     while (index < argv.length && argv[index]!.startsWith("-")) {
-      if (!GIT_GLOBALS.has(argv[index]!)) return false
+      if (!globals.has(argv[index]!)) return false
       index++
     }
     const name = argv[index]
     if (name === undefined) return false
-    const verb = GIT_VERBS[name]
+    // Some verbs are read-only in one sub-form only — `stash list` lists, `stash` itself changes the
+    // working tree — so a two-word key is tried before the bare one.
+    const pair = argv[index + 1] === undefined ? undefined : `${name} ${argv[index + 1]}`
+    const compound = pair !== undefined ? verbs[pair] : undefined
+    const verb = compound ?? verbs[name]
     if (!verb) return false
-    const rest = argv.slice(index + 1)
+    const rest = argv.slice(index + (compound ? 2 : 1))
     const required = verb.require
     if (required && !rest.some((token) => required.has(token.split("=")[0]))) return false
     return rest.every((token) => acceptable(token, verb))
@@ -228,9 +342,13 @@ export namespace SecurityDecision {
     if (!name) return false
     if (unit.ambient) return false
     if (INERT.has(name)) return true
-    if (name !== "git") return false
+    if (versionOnly(unit)) return true
     // Without the parsed command line there is nothing to prove anything against.
-    return unit.argv !== undefined && unit.argv.length > 0 && inertGit(unit.argv)
+    const argv = unit.argv
+    if (argv === undefined || argv.length === 0) return false
+    if (name === "git") return inertGit(argv)
+    if (name === "docker") return inertDocker(argv)
+    return false
   }
 
   /**
@@ -389,6 +507,35 @@ export namespace SecurityDecision {
   ])
 
   /** Verbs that reach another machine: the same delegation `DELEGATES` names, spelled in git. */
+  /**
+   * Docker forms that report names and status without printing what a container was given. `logs`
+   * and `inspect` are absent on purpose: the first prints application output and the second prints
+   * the container's environment, which is where a secret actually surfaces. Global flags are all
+   * refused — `-H` and `--context` point the client at another daemon.
+   */
+  const DOCKER_GLOBALS = new Set<string>([])
+
+  const DOCKER_VERBS: Record<string, GitVerb> = {
+    ps: {
+      flags: new Set(["--", "--all", "--filter", "--last", "--latest", "--quiet", "-a", "-f", "-l", "-n", "-q"]),
+      short: new Set(["a", "l", "q"]),
+      numeric: true,
+    },
+    images: {
+      flags: new Set(["--", "--all", "--filter", "--quiet", "-a", "-f", "-q"]),
+      short: new Set(["a", "q"]),
+    },
+    version: { flags: new Set(["--"]), short: new Set([]) },
+    "compose ps": {
+      flags: new Set(["--", "--all", "--filter", "--quiet", "--services", "-a", "-q"]),
+      short: new Set(["a", "q"]),
+    },
+  }
+
+  function inertDocker(argv: readonly string[]) {
+    return matches(argv, DOCKER_GLOBALS, DOCKER_VERBS)
+  }
+
   const GIT_REMOTE = new Set(["clone", "fetch", "pull", "push", "remote", "submodule"])
 
   /** Verbs that change the repository, its refs, its working tree or its configuration. */
@@ -448,6 +595,8 @@ export namespace SecurityDecision {
   }
 
   function steers(unit: SecurityDecisionTypes.ExecCommandFact) {
+    // A form the allowlist already proved read-only is not steering anything.
+    if (inert(unit)) return false
     const name = unit.executable
     if (name !== undefined && (HOST.has(name) || DELEGATES.has(name))) return true
     return gitAction(unit) === "remote"

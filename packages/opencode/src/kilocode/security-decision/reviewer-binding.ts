@@ -6,7 +6,6 @@ import type { Config } from "@/config/config"
 import type { LLM } from "@/session/llm"
 import type { MessageV2 } from "@/session/message-v2"
 import type { Provider } from "@/provider/provider"
-import { AppRuntime } from "@/effect/app-runtime"
 import { KiloLLM } from "@/kilocode/session/llm"
 import { LLM as LLMService } from "@/session/llm"
 import { SecurityReviewer } from "./reviewer"
@@ -75,10 +74,17 @@ export namespace SecurityReviewerBinding {
   }
 
   function complete(model: Provider.Model): SecurityReviewer.Complete {
-    return (prompt) =>
-      AppRuntime.runPromise(
+    return async (prompt) => {
+      // Loaded here rather than at module scope, and it has to stay that way. This module is
+      // reachable from `kilocode/bootstrap`, which the control plane pulls in while its own module
+      // body is still running; a static edge from here to the composition root closes that circle
+      // and leaves `Workspace.node` in its temporal dead zone for any graph entered through the
+      // server — which is exactly how the TUI worker enters it. See worker-module-graph.test.ts.
+      const { AppRuntime } = await import("@/effect/app-runtime")
+      return AppRuntime.runPromise(
         LLMService.Service.use((svc) => KiloLLM.text(svc.stream(request(model, prompt))).pipe(Effect.orDie)),
       )
+    }
   }
 
   /**

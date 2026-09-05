@@ -403,3 +403,78 @@ describe("permission-specific normalization", () => {
     })
   })
 })
+
+/**
+ * High-confidence credential files, and the two directories that hold git hooks under their modern
+ * names. Both are extensions of tables that already exist: nothing here weakens a rule, and the cost
+ * of a false positive is one ask on a file ordinary work rarely touches.
+ */
+describe("credential files and hook directories", () => {
+  const decide = (permission: string, file: string) =>
+    evaluate({ permission, patterns: [`/repo/${file}`], metadata: {} })
+
+  test.each([
+    [".npmrc"],
+    [".git-credentials"],
+    [".pypirc"],
+    [".dockercfg"],
+    [".htpasswd"],
+    [".terraformrc"],
+    [".docker/config.json"],
+    [".kube/config"],
+    ["keys/id_rsa"],
+    ["keys/id_ed25519"],
+    ["keys/id_ecdsa"],
+    ["cert.p12"],
+    ["cert.pfx"],
+    ["store.jks"],
+    ["store.keystore"],
+    ["secrets.yaml"],
+    ["secrets.yml"],
+    ["service-account.json"],
+  ])("reading %s crosses the sensitive boundary", (file) => {
+    const out = decide("read", file)
+    expect({ file, rule: out.rule_id, reviewable: out.reviewable }).toEqual({
+      file,
+      rule: "SEC.V1.SENSITIVE_BOUNDARY",
+      reviewable: false,
+    })
+  })
+
+  test.each([[".npmrc"], [".kube/config"], ["keys/id_rsa"]])("writing %s crosses it too", (file) => {
+    expect(decide("write", file).rule_id).toBe("SEC.V1.SENSITIVE_BOUNDARY")
+  })
+
+  test.each([["src/index.ts"], ["package.json"], ["README.md"], ["config.json"], ["docs/keystore.md"]])(
+    "%s stays ordinary",
+    (file) => {
+      expect(decide("read", file).rule_id).not.toBe("SEC.V1.SENSITIVE_BOUNDARY")
+    },
+  )
+
+  /**
+   * `.husky` and `.githooks` are where `core.hooksPath` points in a modern repository, so a write
+   * there installs a hook exactly as a write to `.git/hooks` does. They ask rather than deny:
+   * unlike `.git/hooks`, these files are committed and a developer edits them by hand.
+   */
+  test.each([[".husky/pre-commit"], [".husky/commit-msg"], [".githooks/pre-push"]])(
+    "writing %s is a control-plane change",
+    (file) => {
+      const out = decide("write", file)
+      expect({ file, rule: out.rule_id, decision: out.decision, reviewable: out.reviewable }).toEqual({
+        file,
+        rule: "SEC.V1.CONTROL_PLANE_WRITE",
+        decision: "ask",
+        reviewable: false,
+      })
+    },
+  )
+
+  test("reading a hook directory is ordinary", () => {
+    expect(decide("read", ".husky/pre-commit").rule_id).toBe("SEC.V1.NO_OPINION")
+  })
+
+  test("a real git hook still denies", () => {
+    expect(decide("write", ".git/hooks/pre-commit").decision).toBe("deny")
+  })
+})
