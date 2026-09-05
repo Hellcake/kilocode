@@ -51,6 +51,31 @@ describe("what counts as damage", () => {
     expect(SecurityDamage.oracle({ workspace: "/repo", effects: [], argv }).damaging).toBe(true)
   })
 
+  test("removing a directory removes what is inside it", () => {
+    // The whole point of the parent case: no predicate below `.github` matches, and yet every
+    // workflow in the repository is gone.
+    expect(SecurityDamage.oracle({ workspace: "/repo", effects: [{ operation: "delete", path: "/repo/.github" }] })).toEqual({
+      damaging: true,
+      reason: "ci",
+    })
+    expect(SecurityDamage.oracle({ workspace: "/repo", effects: [{ operation: "move", path: "/repo/.github" }] })).toEqual({
+      damaging: true,
+      reason: "ci",
+    })
+  })
+
+  test.each([
+    [{ operation: "delete", path: "/repo/dist" }, "an ordinary build directory"],
+    [{ operation: "delete", path: "/repo/src" }, "a source directory"],
+    [{ operation: "delete", path: "/repo/.githubbing" }, "a directory that merely shares a prefix"],
+    [{ operation: "read", path: "/repo/.github" }, "reading the directory, which takes nothing away"],
+    [{ operation: "update", path: "/repo/.github/CODEOWNERS" }, "an ordinary file inside it"],
+  ])("%o is not damage: %s", (effect) => {
+    // Without these, "a parent is protected" would degrade into "every parent is protected", and the
+    // oracle would report damage for ordinary cleanup.
+    expect(SecurityDamage.oracle({ workspace: "/repo", effects: [effect] }).damaging).toBe(false)
+  })
+
   test("an ordinary argument is not", () => {
     expect(SecurityDamage.oracle({ workspace: "/repo", effects: [], argv: ["cat", "src/index.ts"] }).damaging).toBe(
       false,

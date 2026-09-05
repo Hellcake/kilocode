@@ -172,6 +172,63 @@ export namespace SecurityDecisionAdapter {
   }
 
   /**
+   * Second segments the CI class needs before it recognises a `.github` directory.
+   *
+   * Taken from `CI.github` rather than restated, so a protected name added there is automatically a
+   * name an ancestor can be asked about.
+   */
+  const SUBTREE_PROBES = [...CI.github]
+
+  /** Operations that take a whole subtree away rather than changing one file inside it. */
+  const SUBTREE_DESTRUCTIVE = new Set(["delete", "move"])
+
+  /** Strictness order, used only to choose between several protected classes under one target. */
+  const CLASS_RANK: Partial<Record<T.PathClass, number>> = {
+    git_hook: 4,
+    control_plane: 3,
+    ci: 2,
+    package_manifest: 2,
+    sensitive: 1,
+  }
+
+  /**
+   * The class an operation inherits from what lives underneath its target.
+   *
+   * Removing a directory removes everything in it, so an operation that takes a whole subtree away
+   * is a mutation of the strictest thing inside that subtree. `.github` is the case that exposed
+   * this: the CI class is spelled `.github/workflows`, the parent matched no pattern of its own, and
+   * `rm -rf .github` — which deletes every workflow — was therefore classified as ordinary.
+   *
+   * It asks the classifier rather than carrying a second list of protected names, so the two cannot
+   * disagree. Deliberately narrow in three ways. It applies only to subtree-destructive operations,
+   * because reading or writing *inside* a directory takes nothing away and a read of the directory
+   * itself takes nothing away either. It applies only to a target with no class of its own; one that
+   * has a class is already held by the rule written for it, and inheriting on top of that would
+   * quietly escalate, for example turning every `.git` removal into the hook rule's hard deny. And
+   * it never applies to the workspace root, whose destruction is the destructive-filesystem question
+   * in its own right rather than an inherited one.
+   */
+  function inherited(target: string, operation: string | undefined): T.PathClass | undefined {
+    if (operation === undefined || !SUBTREE_DESTRUCTIVE.has(operation)) return undefined
+    const normalized = posix(target).replace(/\/+$/, "")
+    if (normalized === "" || normalized === "." || normalized === "/") return undefined
+    let best: T.PathClass | undefined
+    for (const probe of SUBTREE_PROBES) {
+      const candidate = pathClass(path.posix.join(normalized, probe))
+      if (candidate === "ordinary" || candidate === "unknown") continue
+      if (!best || (CLASS_RANK[candidate] ?? 0) > (CLASS_RANK[best] ?? 0)) best = candidate
+    }
+    return best
+  }
+
+  /** Apply subtree inheritance to one already-classified fact. */
+  function descend(fact: T.PathFact, operation: string): T.PathFact {
+    if (fact.class !== "ordinary" || !fact.inWorkspace) return fact
+    const cls = inherited(fact.path, fact.operation ?? operation)
+    return cls ? { ...fact, class: cls } : fact
+  }
+
+  /**
    * Path classes are matched case-insensitively and with the directory itself included.
    *
    * Both halves close a spelling bypass rather than widening a class. `cp evil .git/hooks` writes
@@ -504,7 +561,8 @@ export namespace SecurityDecisionAdapter {
     const identity = target.patterns ? resolved(request) : { value: undefined, truncated: false }
     // Shell patterns are commands, not paths: its targets come from the scan's structured effects,
     // plus the notable paths its own command line names.
-    const paths =
+    const action = operation(request)
+    const classified =
       kind === "mcp"
         ? []
         : EXECS.has(request.permission)
@@ -516,10 +574,11 @@ export namespace SecurityDecisionAdapter {
                 classify(identity.value?.[index] ?? pattern, ctx.workspace, region),
               )
             })()
+    const paths = classified.map((fact) => descend(fact, action))
     const complete = !EXECS.has(request.permission) || facts !== undefined
     return {
       version: 1,
-      action: { kind, operation: operation(request), paths, ...(facts ? { exec: facts } : {}) },
+      action: { kind, operation: action, paths, ...(facts ? { exec: facts } : {}) },
       baseline: {
         decision: ctx.floor.action === "deny" ? "ask" : ctx.floor.action,
         authority: ctx.floor.authority,
