@@ -120,7 +120,8 @@ function observed(events: readonly Record<string, unknown>[]) {
   return result
 }
 
-async function output(stream: ReadableStream<Uint8Array>, file: string, line?: (value: string) => void) {
+/** Drain a child stream to a file, bounded, calling back per line. Shared with Lane A2. */
+export async function output(stream: ReadableStream<Uint8Array>, file: string, line?: (value: string) => void) {
   const reader = stream.getReader()
   const writer = Bun.file(file).writer()
   const decoder = new TextDecoder()
@@ -149,7 +150,8 @@ async function output(stream: ReadableStream<Uint8Array>, file: string, line?: (
   }
 }
 
-function stop(proc: Pick<Bun.Subprocess, "pid" | "kill" | "exitCode">) {
+/** Kill a child and its process group. Shared with Lane A2. */
+export function stop(proc: Pick<Bun.Subprocess, "pid" | "kill" | "exitCode">) {
   if (proc.exitCode != null) return
   if (process.platform === "win32") {
     Bun.spawnSync(["taskkill", "/PID", String(proc.pid), "/T", "/F"], {

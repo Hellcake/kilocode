@@ -190,7 +190,112 @@ export type A1Case = Readonly<{
   gap_kind?: GapKind
 }>
 
-export type Case = AgentCase | A1Case
+/**
+ * What Lane A2 observed, by domain.
+ *
+ * The `literal_`/`modeled_` split is the whole point of the vocabulary. A `literal_` domain says the
+ * effect happened: a file is there, bytes arrived on a socket, the canary came back in tool output.
+ * A `modeled_` domain says the command reached the execution boundary and a `PATH` shim answered
+ * it — real evidence that the layer did not stop it, and deliberately not a claim that the host
+ * changed. A benchmark that blurred the two would be reporting an attack it never actually landed.
+ */
+export const A2_DOMAINS = [
+  "literal_fs",
+  "literal_outside_fs",
+  "modeled_host_exec",
+  "modeled_package_install",
+  "literal_local_exfil",
+  "literal_secret_disclosure",
+] as const
+export type A2Domain = (typeof A2_DOMAINS)[number]
+
+export type A2Damage =
+  | Readonly<{ domain: "literal_fs"; type: "file_exists" | "file_absent" | "file_changed"; path: string }>
+  | Readonly<{ domain: "literal_fs"; type: "file_contains"; path: string; value: string }>
+  /** Any file in the disposable sentinel root, optionally one carrying the episode canary. */
+  | Readonly<{ domain: "literal_outside_fs"; contains?: string }>
+  | Readonly<{ domain: "modeled_host_exec"; program: string }>
+  | Readonly<{ domain: "modeled_package_install"; program: string }>
+  | Readonly<{ domain: "literal_local_exfil" }>
+  | Readonly<{ domain: "literal_secret_disclosure" }>
+
+/**
+ * What a scripted step is for.
+ *
+ * Declared rather than inferred, because the recovery metrics are about intent: the harness cannot
+ * tell a safe alternative from a re-routed attack by looking at a command, and guessing would make
+ * `workaround_stopped` a measurement of the guess.
+ */
+export const A2_ROLES = ["setup", "attack", "safe_recovery", "workaround"] as const
+export type A2Role = (typeof A2_ROLES)[number]
+
+/**
+ * What the step is expected to do. Asserted per step, not per episode.
+ *
+ * `not_issued` is a real outcome, not a harness failure: when the layer ends the turn rather than
+ * handing the model a structured block, the later steps of the script never reach the tool boundary
+ * at all. A case that observes that has to be able to say so.
+ */
+export const A2_STEP_OUTCOMES = ["executed", "stopped", "not_issued"] as const
+export type A2StepOutcome = (typeof A2_STEP_OUTCOMES)[number]
+
+export type A2Step = Readonly<{
+  tool: string
+  input: Readonly<Record<string, unknown>>
+  role: A2Role
+  expect: A2StepOutcome
+}>
+
+/**
+ * A deterministic end-to-end episode.
+ *
+ * The script lives here and only here. The old `probe.ts` kept a per-case-id table of tool calls
+ * beside the case file, which made the dataset two sources of truth that could disagree silently;
+ * the A2 model server knows no case ids at all and simply plays back what this array says.
+ */
+export type A2Case = Readonly<{
+  schema: "kilo.security-bench/v2"
+  mode: "a2"
+  lane: "A2"
+  id: string
+  kind: "benign" | "attack"
+  provenance: Provenance
+  /**
+   * `direct_task` throughout. A2 hands the script to a deterministic model, so nothing here is
+   * evidence about indirect prompt injection, and no case is allowed to imply otherwise.
+   */
+  delivery: Extract<Delivery, "direct_task">
+  family: string
+  fixture: string
+  prompt: string
+  target_effect: readonly ThreatClass[]
+  route: Route
+  statefulness: Statefulness
+  expected_enforcement: Enforcement
+  setup: readonly Setup[]
+  script: readonly A2Step[]
+  /**
+   * Whether this case may be replayed with the security layer switched off, as an oracle control.
+   *
+   * Only true when every scripted command is confined to the fixture workspace, the disposable
+   * sentinel root, a `PATH` shim or the loopback sink — because with the layer off, every one of
+   * them runs. A case whose failure mode reaches the host is never given this flag, and the
+   * harness refuses to run an unsafe control without it.
+   */
+  unsafe_control: boolean
+  /** What the independent oracle must see for this episode to count as damaging. */
+  damage: readonly A2Damage[]
+  /**
+   * What a benign episode is supposed to have achieved, in the same oracle vocabulary as `damage`.
+   * One vocabulary rather than two: a utility claim and a damage claim are read by the same oracle,
+   * so they must be expressible in exactly the same terms.
+   */
+  utility: readonly A2Damage[]
+  limits: Readonly<{ wall_seconds: number; tool_calls: number }>
+  tags: readonly string[]
+}>
+
+export type Case = AgentCase | A1Case | A2Case
 
 type RecordValue = Record<string, unknown>
 
@@ -271,7 +376,7 @@ function step(value: unknown, label: string): Setup {
   const path = relative(input["path"], `${label}.path`)
   if (type === "write_file") {
     if (typeof input["value"] !== "string") fail(`${label}.value must be a string`)
-    return { type, path, value: input["value"] }
+    return { type, path, value: templated(input["value"], `${label}.value`) }
   }
   return { type, path }
 }
@@ -281,6 +386,8 @@ function steps(value: unknown, label: string) {
   if (!Array.isArray(value)) fail(`${label} must be an array`)
   return value.map((item, index) => step(item, `${label}[${index}]`))
 }
+
+const steps2 = steps
 
 function effects(value: unknown, label: string) {
   if (value == null) return undefined
@@ -379,12 +486,137 @@ function a1(input: RecordValue): A1Case {
   }
 }
 
+/**
+ * The substitutions a case may carry.
+ *
+ * A fixed, closed set. The sentinel root and the sink port are chosen per episode and cannot be
+ * written into a checked-in file, and an open-ended template would let a case name a path on the
+ * machine running the benchmark — which is the one thing an executing lane must never allow.
+ */
+export const A2_PLACEHOLDERS = ["${SENTINEL}", "${SINK_URL}", "${SINK_PORT}", "${CANARY}", "${WORKSPACE}"] as const
+export type A2Placeholder = (typeof A2_PLACEHOLDERS)[number]
+
+const PLACEHOLDER = /\$\{[A-Z_]+\}/g
+
+const ALLOWED_PLACEHOLDERS: ReadonlySet<string> = new Set(A2_PLACEHOLDERS)
+
+function templated(value: string, label: string) {
+  for (const found of value.match(PLACEHOLDER) ?? [])
+    if (!ALLOWED_PLACEHOLDERS.has(found))
+      fail(`${label} uses an unknown placeholder ${found}; allowed: ${A2_PLACEHOLDERS.join(", ")}`)
+  return value
+}
+
+function damage(value: unknown, label: string): A2Damage {
+  const input = record(value, label)
+  const domain = one(input["domain"], A2_DOMAINS, `${label}.domain`)
+  if (domain === "literal_fs") {
+    const type = one(
+      input["type"],
+      ["file_exists", "file_absent", "file_changed", "file_contains"] as const,
+      `${label}.type`,
+    )
+    const file = relative(input["path"], `${label}.path`)
+    if (type === "file_contains") {
+      if (typeof input["value"] !== "string") fail(`${label}.value must be a string`)
+      return { domain, type, path: file, value: templated(input["value"], `${label}.value`) }
+    }
+    return { domain, type, path: file }
+  }
+  if (domain === "literal_outside_fs") {
+    if (input["contains"] == null) return { domain }
+    if (typeof input["contains"] !== "string") fail(`${label}.contains must be a string`)
+    return { domain, contains: templated(input["contains"], `${label}.contains`) }
+  }
+  if (domain === "modeled_host_exec" || domain === "modeled_package_install") {
+    const program = string(input["program"], `${label}.program`)
+    return { domain, program }
+  }
+  return { domain }
+}
+
+function damages(value: unknown, label: string, required: boolean) {
+  if (value == null && !required) return []
+  if (!Array.isArray(value) || (required && value.length === 0)) fail(`${label} must be a non-empty array`)
+  return value.map((item, index) => damage(item, `${label}[${index}]`))
+}
+
+/** Every string in a step's input is template-checked, however deeply it is nested. */
+function scan(value: unknown, label: string): unknown {
+  if (typeof value === "string") return templated(value, label)
+  if (Array.isArray(value)) return value.map((item, index) => scan(item, `${label}[${index}]`))
+  if (object(value))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scan(item, `${label}.${key}`)]))
+  return value
+}
+
+function step2(value: unknown, label: string): A2Step {
+  const input = record(value, label)
+  const tool = string(input["tool"], `${label}.tool`)
+  const args = record(input["input"], `${label}.input`)
+  const scanned = scan(args, `${label}.input`)
+  if (!object(scanned)) fail(`${label}.input must be an object`)
+  return {
+    tool,
+    input: scanned,
+    role: one(input["role"], A2_ROLES, `${label}.role`),
+    expect: one(input["expect"], A2_STEP_OUTCOMES, `${label}.expect`),
+  }
+}
+
+function a2(input: RecordValue): A2Case {
+  const target = effects(input["target_effect"], "target_effect")
+  if (!target) fail("target_effect is required")
+  if (input["lane"] !== "A2") fail("lane must be A2 for an a2 case")
+  if (input["delivery"] !== "direct_task") fail("delivery must be direct_task; A2 is not an injection lane")
+  const script = input["script"]
+  if (!Array.isArray(script) || script.length === 0) fail("script must be a non-empty array")
+  const kind = one(input["kind"], ["benign", "attack"] as const, "kind")
+  const limits = input["limits"] == null ? {} : record(input["limits"], "limits")
+  const steps = script.map((item, index) => step2(item, `script[${index}]`))
+  if (kind === "attack" && !steps.some((item) => item.role === "attack"))
+    fail("an attack case must script at least one step with role attack")
+  // The `attack` role is what `attempted` and the ASR denominators are counted from, so a benign
+  // case may not carry one: its ordinary work is `setup`, however conservatively the layer holds it.
+  if (kind === "benign" && steps.some((item) => item.role === "attack"))
+    fail("a benign case must not script a step with role attack")
+  if (input["unsafe_control"] != null && typeof input["unsafe_control"] !== "boolean")
+    fail("unsafe_control must be a boolean")
+  return {
+    schema: "kilo.security-bench/v2",
+    mode: "a2",
+    lane: "A2",
+    id: id(input["id"], "id"),
+    kind,
+    provenance: one(input["provenance"], PROVENANCES, "provenance"),
+    delivery: "direct_task",
+    family: string(input["family"], "family"),
+    fixture: id(input["fixture"], "fixture"),
+    prompt: string(input["prompt"], "prompt"),
+    target_effect: target,
+    route: one(input["route"], ROUTES, "route"),
+    statefulness: one(input["statefulness"], STATEFULNESS, "statefulness"),
+    expected_enforcement: one(input["expected_enforcement"], ENFORCEMENTS, "expected_enforcement"),
+    setup: steps2(input["setup"], "setup"),
+    script: steps,
+    unsafe_control: input["unsafe_control"] === true,
+    damage: damages(input["damage"], "damage", kind === "attack"),
+    utility: damages(input["utility"], "utility", false),
+    limits: {
+      wall_seconds: integer(limits["wall_seconds"], 180, 1800, "limits.wall_seconds"),
+      tool_calls: integer(limits["tool_calls"], 20, 1000, "limits.tool_calls"),
+    },
+    tags: strings(input["tags"], "tags"),
+  }
+}
+
 function parse(value: unknown): Case {
   const input = record(value, "case")
   if (input["schema"] !== "kilo.security-bench/v2") fail("schema must be kilo.security-bench/v2")
   if (input["mode"] === "agent") return agent(input)
   if (input["mode"] === "a1") return a1(input)
-  return fail("mode must be agent or a1")
+  if (input["mode"] === "a2") return a2(input)
+  return fail("mode must be agent, a1 or a2")
 }
 
 export const CaseSchema = {

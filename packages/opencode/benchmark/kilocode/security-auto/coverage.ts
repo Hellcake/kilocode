@@ -46,6 +46,8 @@ export const classes: readonly Group[] = [
       "a1-c6-secret-read-direct",
       "a1-c6-outside-workspace-write",
       "a1-c2-root-delete",
+      "a2-c1-contained-test-run",
+      "a2-c1-contained-build-check",
     ],
     // The dataset alone is not the claim. C1 is only covered on a run whose preflight proved the
     // backend operational, which is a property of the machine and not of these files, so the
@@ -62,6 +64,9 @@ export const classes: readonly Group[] = [
       "a1-c2-benign-build-output",
       "a1-c2-benign-source-move",
       "benign-file-cleanup",
+      "a2-c2-build-cleanup",
+      "a2-c2-source-tree-delete",
+      "a2-c2-git-directory-delete",
     ],
   },
   {
@@ -69,6 +74,11 @@ export const classes: readonly Group[] = [
     title: "Repository execution persistence",
     gaps: ["a1-c3-hooks-path-reroute"],
     cases: [
+      "a2-c3-hook-direct",
+      "a2-c3-temp-to-hook",
+      "a2-c3-envrc-redirect",
+      "a2-c3-hooks-path-reroute",
+      "a2-c3-delayed-trigger",
       "a1-c3-hook-redirect",
       "a1-c3-hook-staged-copy",
       "a1-c3-hooks-path-reroute",
@@ -97,6 +107,10 @@ export const classes: readonly Group[] = [
       "ci-staged-move-injection",
       "release-receipt-ci-injection",
       "benign-ci-change",
+      "a2-c4-workflow-write",
+      "a2-c4-temp-to-workflow",
+      "a2-c4-workflow-parent-delete",
+      "a2-r1-write-workflow",
     ],
   },
   {
@@ -111,6 +125,11 @@ export const classes: readonly Group[] = [
       "readme-package-script",
       "migration-plan-package-script",
       "benign-package-change",
+      "a2-c5-install-direct",
+      "a2-c5-manifest-redirect",
+      "a2-c5-temp-to-manifest",
+      "a2-c5-lifecycle-script",
+      "a2-r1-edit-manifest",
     ],
   },
   {
@@ -127,6 +146,12 @@ export const classes: readonly Group[] = [
       "readme-canary-copy",
       "npmrc-staged-copy",
       "provider-health-credential-copy",
+      "a2-c6-secret-read",
+      "a2-c6-secret-read-wrapper",
+      "a2-c6-outside-workspace-write",
+      "a2-c6-local-exfil",
+      "a2-c6-staged-exfil",
+      "a2-r1-read-secret",
     ],
   },
   {
@@ -142,6 +167,11 @@ export const classes: readonly Group[] = [
       "a1-c7-benign-known-inert",
       "a1-c7-benign-listing",
       "benign-unclassified-shell",
+      "a2-c7-unclassified-archive",
+      "a2-c7-composed-exec",
+      "a2-c7-host-control",
+      "a2-c7-container-control",
+      "a2-c7-blocked-then-reroute",
     ],
     gaps: ["a1-c7-wrapper-hides-secret-read"],
   },
@@ -166,6 +196,10 @@ export const routes: readonly Group[] = [
     id: "R1",
     title: "Structured file tools",
     cases: [
+      "a2-r1-write-workflow",
+      "a2-r1-edit-manifest",
+      "a2-r1-read-secret",
+      "a2-r1-benign-write-source",
       "nested-policy-hook-injection",
       "npmrc-staged-copy",
       "provider-health-credential-copy",
@@ -173,7 +207,6 @@ export const routes: readonly Group[] = [
       "source-policy-hook-injection",
       "migration-plan-package-script",
     ],
-    deferred: "A2: A1 is shell-only, so the read/edit/write entry has no production-path evidence yet",
   },
   {
     id: "R2",
@@ -186,6 +219,9 @@ export const routes: readonly Group[] = [
       "ci-staged-move-injection",
       "hook-path-reroute-injection",
       "release-receipt-ci-injection",
+      "a2-c5-install-direct",
+      "a2-c6-secret-read",
+      "a2-c7-host-control",
     ],
   },
   {
@@ -203,6 +239,11 @@ export const routes: readonly Group[] = [
     id: "R4",
     title: "Sequences and composition",
     cases: [
+      "a2-c4-temp-to-workflow",
+      "a2-c3-temp-to-hook",
+      "a2-c5-temp-to-manifest",
+      "a2-c6-staged-exfil",
+      "a2-c3-delayed-trigger",
       "a1-c5-install-cwd",
       "a1-c7-command-substitution",
       "ci-staged-move-injection",
@@ -215,6 +256,9 @@ export const routes: readonly Group[] = [
     id: "R5",
     title: "Wrappers, prefixes and rerouting",
     cases: [
+      "a2-c6-secret-read-wrapper",
+      "a2-c7-composed-exec",
+      "a2-c7-blocked-then-reroute",
       "a1-c5-install-interpreter",
       "a1-c7-ambient-environment",
       "a1-c7-wrapper-hides-secret-read",
@@ -232,7 +276,7 @@ export const routes: readonly Group[] = [
   {
     id: "R7",
     title: "External directory",
-    cases: ["a1-c6-outside-workspace-write", "a1-c6-outside-workspace-redirect"],
+    cases: ["a1-c6-outside-workspace-write", "a1-c6-outside-workspace-redirect", "a2-c6-outside-workspace-write"],
   },
   {
     id: "R8",

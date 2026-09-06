@@ -1,7 +1,7 @@
 import path from "node:path"
 import { appendFile, mkdir } from "node:fs/promises"
 import { parseArgs } from "node:util"
-import { agents, lane1, load, ROOT } from "./cases"
+import { agents, lane1, lane2, load, ROOT } from "./cases"
 import {
   REVIEWER_MODES,
   compareReviewers,
@@ -15,6 +15,9 @@ import {
   type ReviewerMode,
 } from "./lane-a1"
 import { BenchSandbox } from "./sandbox"
+import { LaneA2 } from "./lane-a2"
+import { BenchModel } from "./model-server"
+import { A2Report } from "./a2-report"
 import { list, get } from "./profiles"
 import { invalid, markdown, summarize, read, type Episode } from "./report"
 import { CLI, PKG, cleanenv, run as episode, type Job } from "./runner"
@@ -39,6 +42,10 @@ const parsed = parseArgs({
     keep: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
     "provider-config": { type: "string" },
+    // Opt-in oracle validation. Never a production profile: it replays attack cases with the
+    // deterministic layer switched off, and only cases whose commands stay inside the fixture,
+    // the sentinel root, a shim or the loopback sink are eligible.
+    "unsafe-control": { type: "boolean", default: false },
     "wall-seconds": { type: "string" },
     "human-seconds": { type: "string", default: "15" },
     // Defaults to the deterministic baseline. A run that did not ask for a reviewer must not get
@@ -159,6 +166,10 @@ function help() {
     `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a1 [--sandbox ID] [--reviewer MODE] [--out dir]\n`,
   )
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts matrix [--out dir]\n`)
+  process.stdout.write(
+    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a2 [--sandbox ID] [--reviewer MODE] [--unsafe-control] [--out dir]\n`,
+  )
+  process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a2-matrix [--unsafe-control] [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts coverage [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts profiles\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts doctor\n`)
@@ -251,8 +262,11 @@ async function main() {
   }
   const cases = await load()
   if (command === "validate") {
-    await Promise.all(agents(cases).map((item) => fixture(path.join(ROOT, "fixtures", item.fixture))))
+    await Promise.all(
+      [...agents(cases), ...lane2(cases)].map((item) => fixture(path.join(ROOT, "fixtures", item.fixture))),
+    )
     const a1 = lane1(cases)
+    const a2 = lane2(cases)
     // A `synthetic-facts` case bypasses the production normalization path on purpose. It may exist,
     // but it must never be counted as production-path coverage, so it is rejected here for now.
     const synthetic = a1.filter((item) => item.entry !== "shell")
@@ -262,6 +276,9 @@ async function main() {
     process.stdout.write(
       `validated ${agents(cases).length} agent cases, ${a1.length} A1 cases ` +
         `(${a1.filter((item) => item.kind === "attack").length} attack, ${a1.filter((item) => item.kind === "benign").length} benign), ` +
+        `${a2.length} A2 cases ` +
+        `(${a2.filter((item) => item.kind === "attack").length} attack, ${a2.filter((item) => item.kind === "benign").length} benign, ` +
+        `${a2.filter((item) => item.unsafe_control).length} unsafe-control eligible), ` +
         `${mapped.classes} threat classes, ${mapped.routes} routes, ` +
         `${mapped.deferred} deferred and ${mapped.conditional} conditional groups, ${mapped.gaps} known gaps\n`,
     )
@@ -384,6 +401,100 @@ async function main() {
     for (const item of skipped) process.stderr.write(`[bench] skipped ${item.cell}: ${item.reason}\n`)
     process.stderr.write(`[bench] C1 ${coverage.status}${coverage.missing.length ? ` (missing: ${coverage.missing.join(", ")})` : ""}\n`)
     process.stderr.write(`[bench] -> ${file}\n`)
+    return
+  }
+  if (command === "a2" || command === "a2-matrix") {
+    exiting = true
+    const items = lane2(cases)
+    const selected = parsed.values["case"]
+      ? items.filter((item) => parsed.values["case"]!.split(",").includes(item.id))
+      : items
+    if (selected.length === 0) throw new Error("no A2 cases matched")
+    const requestedReviewer = BenchModel.REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
+    if (!requestedReviewer) throw new Error(`--reviewer must be one of ${BenchModel.REVIEWER_MODES.join(", ")}`)
+    const requestedSandbox = BenchSandbox.PROFILE_IDS.find((id) => id === parsed.values.sandbox)
+    if (!requestedSandbox) throw new Error(`--sandbox must be one of ${BenchSandbox.PROFILE_IDS.join(", ")}`)
+    const cells: ReadonlyArray<A2Report.Cell> =
+      command === "a2-matrix"
+        ? [
+            { sandbox: "no-sandbox", reviewer: "off", security: "on" },
+            { sandbox: "no-sandbox", reviewer: "always_allow", security: "on" },
+            { sandbox: "contained-deny", reviewer: "off", security: "on" },
+            { sandbox: "contained-deny", reviewer: "always_allow", security: "on" },
+            { sandbox: "contained-deny", reviewer: "always_keep", security: "on" },
+          ]
+        : [{ sandbox: requestedSandbox, reviewer: requestedReviewer, security: "on" }]
+    const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
+    await mkdir(out, { recursive: true })
+    // The preflight decides once, before any episode: a contained cell on an unproven machine is
+    // skipped rather than reported, and a failed proof aborts instead of downgrading.
+    const preflight = await LaneA2.preflight("contained-deny", out)
+    if (preflight.state === "failed")
+      throw new Error(`sandbox preflight failed; refusing to report a contained A2 run`)
+    const summaries: A2Report.Summary[] = []
+    const skipped: Array<{ cell: string; reason: string }> = []
+    const episodes: LaneA2.Episode[] = []
+    for (const cell of cells) {
+      const label = `${cell.sandbox}/${cell.reviewer}/${cell.security}`
+      if (cell.sandbox !== "no-sandbox" && !BenchSandbox.proven(preflight)) {
+        skipped.push({ cell: label, reason: `containment is ${preflight.state}, not operational` })
+        continue
+      }
+      const run: LaneA2.Episode[] = []
+      for (const item of selected) {
+        process.stderr.write(`[bench] a2 ${label} ${item.id}\n`)
+        run.push(await LaneA2.run({ case: item, sandbox: cell.sandbox, reviewer: cell.reviewer, security: cell.security, out }))
+      }
+      episodes.push(...run)
+      summaries.push(A2Report.summarize(selected, run))
+    }
+    // The oracle control, opt-in and never a production profile: the same attack cases with the
+    // deterministic layer switched off, purely to show the measurement can report the opposite.
+    let vacuity: A2Report.NonVacuity | undefined
+    if (parsed.values["unsafe-control"]) {
+      const control = selected.filter((item) => item.unsafe_control)
+      const skippedControls = selected.filter((item) => !item.unsafe_control).map((item) => item.id)
+      if (skippedControls.length > 0)
+        process.stderr.write(`[bench] unsafe control skips ${skippedControls.join(", ")}\n`)
+      const run: LaneA2.Episode[] = []
+      for (const item of control) {
+        process.stderr.write(`[bench] a2 control ${item.id}\n`)
+        run.push(await LaneA2.run({ case: item, sandbox: "no-sandbox", reviewer: "off", security: "off", out }))
+      }
+      episodes.push(...run)
+      vacuity = A2Report.nonVacuity(run)
+    }
+    const report = {
+      schema: "kilo.security-bench-a2/v1",
+      ...provenanceBase(),
+      lane: "A2" as const,
+      basis: "executed" as const,
+      preflight,
+      skipped,
+      cases: selected.length,
+      summaries,
+      ...(vacuity ? { non_vacuity: vacuity } : {}),
+      episodes,
+    }
+    const file = path.join(out, command === "a2-matrix" ? "a2-matrix.json" : `a2-${requestedSandbox}-${requestedReviewer}.json`)
+    await Bun.write(file, JSON.stringify(report, null, 2) + "\n")
+    await Bun.write(path.join(out, "a2-report.md"), A2Report.markdown(summaries) + "\n")
+    for (const item of summaries)
+      process.stderr.write(
+        `[bench] ${`${item.cell.sandbox}/${item.cell.reviewer}`.padEnd(28)} containment=${item.containment.padEnd(12)} ` +
+          `attacks=${item.safety.attack_cases} damage=${item.safety.actual_damage} ` +
+          `unsafe_auto_approvals=${item.safety.unsafe_auto_approvals} ASR=${(item.safety.asr_total * 100).toFixed(1)}% ` +
+          `ASR_upper=${(item.safety.asr_upper * 100).toFixed(1)}% invalid=${item.harness.invalid}\n`,
+      )
+    if (vacuity)
+      process.stderr.write(
+        `[bench] non-vacuity: ${vacuity.fired}/${vacuity.controls} controls fired` +
+          (vacuity.silent.length ? `; silent: ${vacuity.silent.join(", ")}` : "") +
+          `\n`,
+      )
+    for (const item of skipped) process.stderr.write(`[bench] skipped ${item.cell}: ${item.reason}\n`)
+    process.stderr.write(`[bench] -> ${file}\n`)
+    if (summaries.some((item) => item.safety.unsafe_auto_approvals > 0)) process.exitCode = 1
     return
   }
   if (command === "coverage") {
