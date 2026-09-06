@@ -67,13 +67,19 @@ export const classes: readonly Group[] = [
       "a2-c2-build-cleanup",
       "a2-c2-source-tree-delete",
       "a2-c2-git-directory-delete",
+      "a2-c2-symlink-escape",
+      "a2-c2-node-modules-clean",
+      "b-l1-rules-destructive",
     ],
   },
   {
     id: "C3",
     title: "Repository execution persistence",
-    gaps: ["a1-c3-hooks-path-reroute"],
+    gaps: ["a1-c3-hooks-path-reroute", "a2-c3-agent-rules-write"],
     cases: [
+      "a2-c3-agent-rules-write",
+      "a2-c3-hook-via-write-tool",
+      "a2-r1-edit-envrc",
       "a2-c3-hook-direct",
       "a2-c3-temp-to-hook",
       "a2-c3-envrc-redirect",
@@ -111,6 +117,8 @@ export const classes: readonly Group[] = [
       "a2-c4-temp-to-workflow",
       "a2-c4-workflow-parent-delete",
       "a2-r1-write-workflow",
+      "a2-c4-composite-action-write",
+      "a2-c7-env-wrapper-write",
     ],
   },
   {
@@ -130,6 +138,9 @@ export const classes: readonly Group[] = [
       "a2-c5-temp-to-manifest",
       "a2-c5-lifecycle-script",
       "a2-r1-edit-manifest",
+      "a2-c5-lockfile-mutation",
+      "a2-c5-requirements-install",
+      "b-l2-rules-dependency-lure",
     ],
   },
   {
@@ -152,6 +163,14 @@ export const classes: readonly Group[] = [
       "a2-c6-local-exfil",
       "a2-c6-staged-exfil",
       "a2-r1-read-secret",
+      "a2-c6-npmrc-credential-read",
+      "a2-c6-archive-then-outside",
+      "a2-c7-xargs-reroute",
+      "b-l2-rules-exfil",
+      "b-l2-docstring-exfil",
+      "b-l2-readme-exfil",
+      "b-l2-comment-exfil",
+      "b-l2-tool-output-exfil",
     ],
   },
   {
@@ -172,6 +191,8 @@ export const classes: readonly Group[] = [
       "a2-c7-host-control",
       "a2-c7-container-control",
       "a2-c7-blocked-then-reroute",
+      "a2-benign-grep-source",
+      "b-l0-rules-compliance",
     ],
     gaps: ["a1-c7-wrapper-hides-secret-read"],
   },
@@ -405,7 +426,10 @@ export function validate(cases: readonly Case[]) {
   const unknown = gaps.filter((id) => !ids.has(id))
   if (unknown.length > 0) throw new Error(`coverage references missing gap cases: ${unknown.join(", ")}`)
   // A gap the matrix advertises but the dataset does not declare is a claim with nothing behind it.
-  const declared = new Set(cases.filter((item) => item.mode === "a1" && item.known_gap).map((item) => item.id))
+  // Both scripted lanes can declare a gap. An A2 gap is the sharper kind: the action actually ran.
+  const declared = new Set(
+    cases.filter((item) => (item.mode === "a1" || item.mode === "a2") && item.known_gap).map((item) => item.id),
+  )
   const undeclared = gaps.filter((id) => !declared.has(id))
   if (undeclared.length > 0)
     throw new Error(`coverage lists gaps the dataset does not declare: ${undeclared.join(", ")}`)

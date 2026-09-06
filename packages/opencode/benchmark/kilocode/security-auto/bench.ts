@@ -1,7 +1,7 @@
 import path from "node:path"
 import { appendFile, mkdir } from "node:fs/promises"
 import { parseArgs } from "node:util"
-import { agents, lane1, lane2, load, ROOT } from "./cases"
+import { agents, lane1, lane2, laneB, load, ROOT } from "./cases"
 import {
   REVIEWER_MODES,
   compareReviewers,
@@ -16,8 +16,10 @@ import {
 } from "./lane-a1"
 import { BenchSandbox } from "./sandbox"
 import { LaneA2 } from "./lane-a2"
-import { BenchModel } from "./model-server"
 import { A2Report } from "./a2-report"
+import { LaneB } from "./lane-b"
+import { BenchEndpoints } from "./endpoints"
+import { BenchSummary } from "./summary"
 import { list, get } from "./profiles"
 import { invalid, markdown, summarize, read, type Episode } from "./report"
 import { CLI, PKG, cleanenv, run as episode, type Job } from "./runner"
@@ -26,6 +28,7 @@ import { record } from "./values"
 import { continued, parse } from "./signals"
 import { fingerprint } from "./fingerprint"
 import { c1Coverage, markdown as coverage, validate as matrix } from "./coverage"
+import { BenchMetrics } from "./metrics"
 
 const parsed = parseArgs({
   allowPositionals: true,
@@ -170,6 +173,12 @@ function help() {
     `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a2 [--sandbox ID] [--reviewer MODE] [--unsafe-control] [--out dir]\n`,
   )
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a2-matrix [--unsafe-control] [--out dir]\n`)
+  process.stdout.write(
+    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts b [--sandbox ID] [--reviewer MODE] [--repeat N] [--workers N] [--out dir]\n`,
+  )
+  process.stdout.write(
+    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts summary --input results-dir [--out dir]\n`,
+  )
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts coverage [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts profiles\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts doctor\n`)
@@ -181,7 +190,7 @@ function help() {
   )
   process.stdout.write(
     `Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id[,id...] --out dir --keep\n` +
-      `         --reviewer off|always_allow|always_keep|malformed|timeout --sandbox no-sandbox|contained-deny\n`,
+      `         --reviewer off|always_allow|always_keep|malformed|timeout|live --sandbox no-sandbox|contained-deny\n`,
   )
   process.stdout.write(`         --provider-config file.json --wall-seconds N --human-seconds N\n`)
 }
@@ -214,6 +223,12 @@ async function doctor() {
   process.exitCode = 1
 }
 
+/** Every report this CLI writes goes through here, so a credential cannot reach disk by habit. */
+async function writeReport(file: string, value: unknown) {
+  const secrets = [BenchEndpoints.coding()?.apiKey, BenchEndpoints.reviewer()?.apiKey]
+  await Bun.write(file, BenchEndpoints.redact(JSON.stringify(value, null, 2), secrets) + "\n")
+}
+
 /**
  * What a report has to carry to be attributable.
  *
@@ -223,8 +238,6 @@ async function doctor() {
 function provenanceBase() {
   return {
     created_at: new Date().toISOString(),
-    lane: "A1" as const,
-    basis: "prospective-simulation" as const,
     git_sha: sha(),
     production_sha: sha(["src/kilocode/security-decision", "src/kilocode/sandbox", "src/permission", "src/kilocode/permission"]),
     benchmark_sha: sha(["benchmark/kilocode/security-auto", "test/kilocode/security-benchmark"]),
@@ -263,10 +276,13 @@ async function main() {
   const cases = await load()
   if (command === "validate") {
     await Promise.all(
-      [...agents(cases), ...lane2(cases)].map((item) => fixture(path.join(ROOT, "fixtures", item.fixture))),
+      [...agents(cases), ...lane2(cases), ...laneB(cases)].map((item) =>
+        fixture(path.join(ROOT, "fixtures", item.fixture)),
+      ),
     )
     const a1 = lane1(cases)
     const a2 = lane2(cases)
+    const b = laneB(cases)
     // A `synthetic-facts` case bypasses the production normalization path on purpose. It may exist,
     // but it must never be counted as production-path coverage, so it is rejected here for now.
     const synthetic = a1.filter((item) => item.entry !== "shell")
@@ -279,6 +295,8 @@ async function main() {
         `${a2.length} A2 cases ` +
         `(${a2.filter((item) => item.kind === "attack").length} attack, ${a2.filter((item) => item.kind === "benign").length} benign, ` +
         `${a2.filter((item) => item.unsafe_control).length} unsafe-control eligible), ` +
+        `${b.length} Lane B cases (${b.filter((item) => item.kind === "attack").length} attack, ` +
+        `${new Set(b.map((item) => item.vector)).size} vectors), ` +
         `${mapped.classes} threat classes, ${mapped.routes} routes, ` +
         `${mapped.deferred} deferred and ${mapped.conditional} conditional groups, ${mapped.gaps} known gaps\n`,
     )
@@ -292,7 +310,7 @@ async function main() {
       const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
       await mkdir(out, { recursive: true })
       const file = path.join(out, "preflight.json")
-      await Bun.write(file, JSON.stringify({ schema: "kilo.security-bench-preflight/v1", ...provenanceBase(), reports }, null, 2) + "\n")
+      await writeReport(file, { schema: "kilo.security-bench-preflight/v1", ...provenanceBase(), reports })
       for (const report of reports)
         process.stderr.write(
           `[bench] ${report.profile}: ${report.state} (${report.backend}, network=${report.network})` +
@@ -378,6 +396,8 @@ async function main() {
     const report = {
       schema: "kilo.security-bench-a1/v2",
       ...provenanceBase(),
+      lane: "A1" as const,
+      basis: "prospective-simulation" as const,
       preflight: [...preflights.values()],
       skipped,
       summaries,
@@ -391,7 +411,7 @@ async function main() {
     // Always a file. The permission scan logs resolved paths to stdout, so a report printed there
     // would arrive interleaved with them and unparseable.
     const file = path.join(out, command === "matrix" ? "a1-matrix.json" : `a1-${requestedSandbox}-${requestedReviewer}.json`)
-    await Bun.write(file, JSON.stringify(report, null, 2) + "\n")
+    await writeReport(file, report)
     for (const item of summaries)
       process.stderr.write(
         `[bench] ${item.cell.padEnd(28)} containment=${item.containment.padEnd(12)} auto_allowed=${item.auto_allowed} ` +
@@ -410,8 +430,8 @@ async function main() {
       ? items.filter((item) => parsed.values["case"]!.split(",").includes(item.id))
       : items
     if (selected.length === 0) throw new Error("no A2 cases matched")
-    const requestedReviewer = BenchModel.REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
-    if (!requestedReviewer) throw new Error(`--reviewer must be one of ${BenchModel.REVIEWER_MODES.join(", ")}`)
+    const requestedReviewer = LaneA2.REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
+    if (!requestedReviewer) throw new Error(`--reviewer must be one of ${LaneA2.REVIEWER_MODES.join(", ")}`)
     const requestedSandbox = BenchSandbox.PROFILE_IDS.find((id) => id === parsed.values.sandbox)
     if (!requestedSandbox) throw new Error(`--sandbox must be one of ${BenchSandbox.PROFILE_IDS.join(", ")}`)
     const cells: ReadonlyArray<A2Report.Cell> =
@@ -426,6 +446,12 @@ async function main() {
         : [{ sandbox: requestedSandbox, reviewer: requestedReviewer, security: "on" }]
     const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
     await mkdir(out, { recursive: true })
+    const reviewerEndpoint = BenchEndpoints.reviewer()
+    if (requestedReviewer === "live" && !reviewerEndpoint)
+      throw new Error(
+        `--reviewer live needs ${BenchEndpoints.REVIEWER_VARS.baseUrl}, ${BenchEndpoints.REVIEWER_VARS.model} ` +
+          `and ${BenchEndpoints.REVIEWER_VARS.apiKey}`,
+      )
     // The preflight decides once, before any episode: a contained cell on an unproven machine is
     // skipped rather than reported, and a failed proof aborts instead of downgrading.
     const preflight = await LaneA2.preflight("contained-deny", out)
@@ -443,7 +469,16 @@ async function main() {
       const run: LaneA2.Episode[] = []
       for (const item of selected) {
         process.stderr.write(`[bench] a2 ${label} ${item.id}\n`)
-        run.push(await LaneA2.run({ case: item, sandbox: cell.sandbox, reviewer: cell.reviewer, security: cell.security, out }))
+        run.push(
+          await LaneA2.run({
+            case: item,
+            sandbox: cell.sandbox,
+            reviewer: cell.reviewer,
+            security: cell.security,
+            reviewerEndpoint,
+            out,
+          }),
+        )
       }
       episodes.push(...run)
       summaries.push(A2Report.summarize(selected, run))
@@ -477,7 +512,7 @@ async function main() {
       episodes,
     }
     const file = path.join(out, command === "a2-matrix" ? "a2-matrix.json" : `a2-${requestedSandbox}-${requestedReviewer}.json`)
-    await Bun.write(file, JSON.stringify(report, null, 2) + "\n")
+    await writeReport(file, report)
     await Bun.write(path.join(out, "a2-report.md"), A2Report.markdown(summaries) + "\n")
     for (const item of summaries)
       process.stderr.write(
@@ -495,6 +530,124 @@ async function main() {
     for (const item of skipped) process.stderr.write(`[bench] skipped ${item.cell}: ${item.reason}\n`)
     process.stderr.write(`[bench] -> ${file}\n`)
     if (summaries.some((item) => item.safety.unsafe_auto_approvals > 0)) process.exitCode = 1
+    return
+  }
+  if (command === "b") {
+    exiting = true
+    const items = laneB(cases)
+    const selected = parsed.values["case"]
+      ? items.filter((item) => parsed.values["case"]!.split(",").includes(item.id))
+      : items
+    if (selected.length === 0) throw new Error("no Lane B cases matched")
+    const requestedReviewer = LaneA2.REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
+    if (!requestedReviewer) throw new Error(`--reviewer must be one of ${LaneA2.REVIEWER_MODES.join(", ")}`)
+    const requestedSandbox = BenchSandbox.PROFILE_IDS.find((id) => id === parsed.values.sandbox)
+    if (!requestedSandbox) throw new Error(`--sandbox must be one of ${BenchSandbox.PROFILE_IDS.join(", ")}`)
+    const coding = BenchEndpoints.coding()
+    // Lane B measures a model's judgement, so there is no deterministic fallback: a run without a
+    // named coding model would be measuring the stub that stands in for one.
+    if (!coding)
+      throw new Error(
+        `Lane B needs a coding model: set ${BenchEndpoints.CODING_VARS.baseUrl}, ` +
+          `${BenchEndpoints.CODING_VARS.model} and ${BenchEndpoints.CODING_VARS.apiKey}`,
+      )
+    const reviewerEndpoint = BenchEndpoints.reviewer()
+    if (requestedReviewer === "live" && !reviewerEndpoint)
+      throw new Error(
+        `--reviewer live needs ${BenchEndpoints.REVIEWER_VARS.baseUrl}, ${BenchEndpoints.REVIEWER_VARS.model} ` +
+          `and ${BenchEndpoints.REVIEWER_VARS.apiKey}`,
+      )
+    const repeat = number(parsed.values.repeat, "repeat")
+    const workers = number(parsed.values.workers, "workers")
+    const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
+    await mkdir(out, { recursive: true })
+    const preflight = await LaneA2.preflight("contained-deny", out)
+    if (preflight.state === "failed") throw new Error("sandbox preflight failed; refusing to report a contained run")
+    if (requestedSandbox !== "no-sandbox" && !BenchSandbox.proven(preflight))
+      throw new Error(`containment is ${preflight.state}, not operational; a contained Lane B run cannot be reported`)
+    const jobs = selected.flatMap((item) =>
+      Array.from({ length: repeat }, (_, index) => ({ item, repeat: index + 1 })),
+    )
+    const queue = [...jobs]
+    const episodes: LaneB.Episode[] = []
+    const work = async () => {
+      while (true) {
+        const job = queue.shift()
+        if (!job) return
+        process.stderr.write(`[bench] b ${requestedSandbox}/${requestedReviewer} ${job.item.id} #${job.repeat}\n`)
+        const episode = await LaneB.run({
+          case: job.item,
+          model: { kind: "live", endpoint: coding },
+          sandbox: requestedSandbox,
+          reviewer: requestedReviewer,
+          reviewerEndpoint,
+          repeat: job.repeat,
+          out,
+        })
+        episodes.push(episode)
+        process.stderr.write(
+          `[bench]   ${episode.case_id} #${episode.repeat}: ${episode.status} delivered=${episode.delivery} ` +
+            `attempted=${episode.attempted} damage=${episode.actual_damage} task=${episode.task_completed}\n`,
+        )
+      }
+    }
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(workers, jobs.length)) }, work))
+    const stats = BenchMetrics.laneB(episodes)
+    const report = {
+      schema: "kilo.security-bench-b/v1",
+      ...provenanceBase(),
+      lane: "B" as const,
+      basis: "executed" as const,
+      preflight,
+      coding_model: BenchEndpoints.reference(coding.endpoint),
+      coding_base_url: coding.endpoint.base_url,
+      ...(reviewerEndpoint && requestedReviewer === "live"
+        ? {
+            reviewer_model: BenchEndpoints.reference(reviewerEndpoint.endpoint),
+            reviewer_base_url: reviewerEndpoint.endpoint.base_url,
+          }
+        : {}),
+      repeat,
+      cases: selected.length,
+      lane_b: stats,
+      by_vector: BenchMetrics.byVector(episodes),
+      reviewer: BenchMetrics.reviewer(episodes),
+      friction: BenchMetrics.friction(episodes),
+      timing: BenchMetrics.timing(episodes),
+      episodes,
+    }
+    const file = path.join(out, `b-${requestedSandbox}-${requestedReviewer}.json`)
+    await writeReport(file, report)
+    process.stderr.write(
+      `[bench] Lane B ${requestedSandbox}/${requestedReviewer}: runs=${stats.runs} valid=${stats.valid} ` +
+        `delivered=${stats.delivered} attempted=${stats.attempted} blocked=${stats.blocked} ` +
+        `damage=${stats.actual_damage} ASR=${(stats.asr_total.rate * 100).toFixed(1)}% invalid=${stats.invalid}\n`,
+    )
+    process.stderr.write(`[bench] -> ${file}\n`)
+    if (stats.actual_damage > 0) process.exitCode = 1
+    return
+  }
+  if (command === "summary") {
+    const input = path.resolve(parsed.values.input ?? parsed.values.out ?? ".")
+    const files = await Array.fromAsync(new Bun.Glob("**/*.json").scan({ cwd: input, absolute: true, onlyFiles: true }))
+    const episodes: BenchSummary.Episode[] = []
+    for (const file of files) {
+      const value: unknown = await Bun.file(file).json().catch(() => undefined)
+      if (!record(value)) continue
+      const schema = value["schema"]
+      if (typeof schema !== "string" || !schema.startsWith("kilo.security-bench-")) continue
+      const list = value["episodes"]
+      if (!Array.isArray(list)) continue
+      for (const item of list) if (BenchSummary.isEpisode(item)) episodes.push(item)
+    }
+    if (episodes.length === 0) throw new Error(`no benchmark episodes found under ${input}`)
+    const groups = BenchSummary.group(episodes, lane2(cases))
+    const out = path.resolve(parsed.values.out ?? input)
+    await mkdir(out, { recursive: true })
+    const provenance = { ...provenanceBase(), sources: files.length, episodes: episodes.length }
+    await writeReport(path.join(out, "summary.json"), { schema: "kilo.security-bench-summary/v1", provenance, groups })
+    await Bun.write(path.join(out, "summary.md"), BenchSummary.markdown(groups, provenance))
+    process.stdout.write(`${path.join(out, "summary.md")}\n`)
     return
   }
   if (command === "coverage") {

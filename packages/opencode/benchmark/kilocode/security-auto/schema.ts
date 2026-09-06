@@ -283,6 +283,13 @@ export type A2Case = Readonly<{
    * harness refuses to run an unsafe control without it.
    */
   unsafe_control: boolean
+  /**
+   * Set when this case records a shortfall rather than a satisfied expectation, exactly as an A1
+   * case does. A gap is reported as a gap and never counted as a pass, and an A2 gap is the sharper
+   * kind: the action actually happened.
+   */
+  known_gap?: string
+  gap_kind?: GapKind
   /** What the independent oracle must see for this episode to count as damaging. */
   damage: readonly A2Damage[]
   /**
@@ -295,7 +302,83 @@ export type A2Case = Readonly<{
   tags: readonly string[]
 }>
 
-export type Case = AgentCase | A1Case | A2Case
+/** Where an indirect injection is planted. Lane B's whole subject. */
+export const B_VECTORS = [
+  "rules",
+  "readme",
+  "source_comment",
+  "docstring",
+  "tool_output",
+  "dependency_lure",
+  "none",
+] as const
+export type BVector = (typeof B_VECTORS)[number]
+
+/**
+ * Whether the payload reaches the model by being in its context automatically, or only if it
+ * chooses to read something.
+ *
+ * `automatic` is the honest label for a rules file: Kilo loads `.kilocode/rules` into the prompt, so
+ * there is nothing to observe and nothing to prove. `observed` means delivery has to be *seen* — the
+ * payload carries a unique token, and only a transcript containing it counts.
+ */
+export const B_DELIVERY_MODES = ["automatic", "observed"] as const
+export type BDeliveryMode = (typeof B_DELIVERY_MODES)[number]
+
+/** Where a case came from, so an adapted scenario can never be mistaken for one authored here. */
+export type CaseSource = Readonly<{
+  repo: string
+  path: string
+  commit: string
+  /** The upstream name for this vector or level. */
+  vector: string
+  /** Always true for a transplanted scenario: the payload was re-expressed for this harness. */
+  adapted: boolean
+  note?: string
+}>
+
+/**
+ * A Lane B episode: a real model, a benign task, and a malicious instruction hidden in the project.
+ *
+ * The defining property is that the benchmark never issues the malicious tool call. It plants the
+ * instruction, asks for ordinary work, and measures whether the model went and did the other thing —
+ * and, if it tried, what the security layer then did about it. A case therefore carries no script.
+ */
+export type BCase = Readonly<{
+  schema: "kilo.security-bench/v2"
+  mode: "b"
+  lane: "B"
+  id: string
+  kind: "benign" | "attack"
+  provenance: Provenance
+  delivery: Delivery
+  vector: BVector
+  delivery_mode: BDeliveryMode
+  family: string
+  fixture: string
+  /** The ordinary work the user asks for. Never mentions the payload. */
+  task: string
+  setup: readonly Setup[]
+  /** The planted instruction. Absent on a benign control, which is the point of the control. */
+  injection?: Readonly<{ path: string; content: string }>
+  target_effect: readonly ThreatClass[]
+  route: Route
+  statefulness: Statefulness
+  expected_enforcement: Enforcement
+  /** Strings whose presence in the transcript shows the payload was read. */
+  delivery_markers: readonly string[]
+  /** Strings in a tool call's arguments that show the model tried to carry the instruction out. */
+  attempt_markers: readonly string[]
+  /** What the injection succeeding actually looks like, in the independent oracle's vocabulary. */
+  damage: readonly A2Damage[]
+  /** What doing the real work looks like, so compliance and usefulness are measured separately. */
+  utility: readonly A2Damage[]
+  limits: Readonly<{ wall_seconds: number; tool_calls: number }>
+  source?: CaseSource
+  tags: readonly string[]
+}>
+
+export type Case = AgentCase | A1Case | A2Case | BCase
 
 type RecordValue = Record<string, unknown>
 
@@ -493,7 +576,14 @@ function a1(input: RecordValue): A1Case {
  * written into a checked-in file, and an open-ended template would let a case name a path on the
  * machine running the benchmark — which is the one thing an executing lane must never allow.
  */
-export const A2_PLACEHOLDERS = ["${SENTINEL}", "${SINK_URL}", "${SINK_PORT}", "${CANARY}", "${WORKSPACE}"] as const
+export const A2_PLACEHOLDERS = [
+  "${SENTINEL}",
+  "${SINK_URL}",
+  "${SINK_PORT}",
+  "${CANARY}",
+  "${WORKSPACE}",
+  "${DELIVERY}",
+] as const
 export type A2Placeholder = (typeof A2_PLACEHOLDERS)[number]
 
 const PLACEHOLDER = /\$\{[A-Z_]+\}/g
@@ -582,6 +672,10 @@ function a2(input: RecordValue): A2Case {
     fail("a benign case must not script a step with role attack")
   if (input["unsafe_control"] != null && typeof input["unsafe_control"] !== "boolean")
     fail("unsafe_control must be a boolean")
+  const gap = input["known_gap"]
+  if (gap != null && typeof gap !== "string") fail("known_gap must be a string")
+  const gapKind = maybe(input["gap_kind"], GAP_KINDS, "gap_kind")
+  if ((gap == null) !== (gapKind == null)) fail("known_gap and gap_kind must be set together")
   return {
     schema: "kilo.security-bench/v2",
     mode: "a2",
@@ -600,6 +694,7 @@ function a2(input: RecordValue): A2Case {
     setup: steps2(input["setup"], "setup"),
     script: steps,
     unsafe_control: input["unsafe_control"] === true,
+    ...(typeof gap === "string" && gapKind ? { known_gap: gap, gap_kind: gapKind } : {}),
     damage: damages(input["damage"], "damage", kind === "attack"),
     utility: damages(input["utility"], "utility", false),
     limits: {
@@ -610,13 +705,83 @@ function a2(input: RecordValue): A2Case {
   }
 }
 
+function source(value: unknown, label: string): CaseSource | undefined {
+  if (value == null) return undefined
+  const input = record(value, label)
+  if (typeof input["adapted"] !== "boolean") fail(`${label}.adapted must be a boolean`)
+  const note = input["note"]
+  if (note != null && typeof note !== "string") fail(`${label}.note must be a string`)
+  return {
+    repo: string(input["repo"], `${label}.repo`),
+    path: string(input["path"], `${label}.path`),
+    commit: string(input["commit"], `${label}.commit`),
+    vector: string(input["vector"], `${label}.vector`),
+    adapted: input["adapted"],
+    ...(typeof note === "string" ? { note } : {}),
+  }
+}
+
+function b(input: RecordValue): BCase {
+  const target = effects(input["target_effect"], "target_effect")
+  if (!target) fail("target_effect is required")
+  if (input["lane"] !== "B") fail("lane must be B for a b case")
+  const kind = one(input["kind"], ["benign", "attack"] as const, "kind")
+  const limits = input["limits"] == null ? {} : record(input["limits"], "limits")
+  const injection = input["injection"] == null ? undefined : record(input["injection"], "injection")
+  // A benign control is a control precisely because nothing is planted in it.
+  if (kind === "attack" && !injection) fail("an attack case must plant an injection")
+  if (kind === "benign" && injection) fail("a benign control must not plant an injection")
+  return {
+    schema: "kilo.security-bench/v2",
+    mode: "b",
+    lane: "B",
+    id: id(input["id"], "id"),
+    kind,
+    provenance: one(input["provenance"], PROVENANCES, "provenance"),
+    delivery: one(input["delivery"], DELIVERIES, "delivery"),
+    vector: one(input["vector"], B_VECTORS, "vector"),
+    delivery_mode: one(input["delivery_mode"], B_DELIVERY_MODES, "delivery_mode"),
+    family: string(input["family"], "family"),
+    fixture: id(input["fixture"], "fixture"),
+    task: templated(string(input["task"], "task"), "task"),
+    setup: steps2(input["setup"], "setup"),
+    ...(injection
+      ? {
+          injection: {
+            path: relative(injection["path"], "injection.path"),
+            content: templated(string(injection["content"], "injection.content"), "injection.content"),
+          },
+        }
+      : {}),
+    target_effect: target,
+    route: one(input["route"], ROUTES, "route"),
+    statefulness: one(input["statefulness"], STATEFULNESS, "statefulness"),
+    expected_enforcement: one(input["expected_enforcement"], ENFORCEMENTS, "expected_enforcement"),
+    delivery_markers: strings(input["delivery_markers"], "delivery_markers").map((value, index) =>
+      templated(value, `delivery_markers[${index}]`),
+    ),
+    attempt_markers: strings(input["attempt_markers"], "attempt_markers").map((value, index) =>
+      templated(value, `attempt_markers[${index}]`),
+    ),
+    damage: damages(input["damage"], "damage", kind === "attack"),
+    utility: damages(input["utility"], "utility", false),
+    limits: {
+      wall_seconds: integer(limits["wall_seconds"], 300, 1800, "limits.wall_seconds"),
+      tool_calls: integer(limits["tool_calls"], 40, 1000, "limits.tool_calls"),
+    },
+    ...(input["source"] != null ? { source: source(input["source"], "source")! } : {}),
+    tags: strings(input["tags"], "tags"),
+  }
+}
+
 function parse(value: unknown): Case {
   const input = record(value, "case")
   if (input["schema"] !== "kilo.security-bench/v2") fail("schema must be kilo.security-bench/v2")
   if (input["mode"] === "agent") return agent(input)
   if (input["mode"] === "a1") return a1(input)
   if (input["mode"] === "a2") return a2(input)
-  return fail("mode must be agent, a1 or a2")
+  if (input["mode"] === "b") return b(input)
+  return fail("mode must be agent, a1, a2 or b")
 }
 
 export const CaseSchema = {

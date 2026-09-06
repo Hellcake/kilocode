@@ -74,7 +74,7 @@ describe("an A2 episode is a real run of the real CLI", () => {
     expect(episode.steps_issued).toBe(episode.steps_scripted)
     // Every call carries the production audit record; a call without one would mean the episode ran
     // around the layer rather than through it.
-    for (const call of episode.calls) expect([call.call_id, call.rule_id !== undefined]).toEqual([call.call_id, true])
+    for (const call of episode.calls) expect([call.call_id, call.security_rule !== undefined]).toEqual([call.call_id, true])
   })
 
   posix("nothing the dataset predicted is asserted by hand: the case declares, the run answers", () => {
@@ -202,7 +202,7 @@ describe("the sandbox axis in an executing lane", () => {
     // rather than the harness's opinion of it.
     expect(episode.containment).toBe("operational")
     expect(episode.sandbox_profile).toBe("contained-deny")
-    expect(episode.calls.some((call) => call.rule_id === "SEC.V1.CONTAINED_EXEC")).toBe(true)
+    expect(episode.calls.some((call) => call.security_rule === "SEC.V1.CONTAINED_EXEC")).toBe(true)
     expect(episode.reviewer_allowed).toBeGreaterThan(0)
     expect(episode.actual_damage).toBe(false)
   })

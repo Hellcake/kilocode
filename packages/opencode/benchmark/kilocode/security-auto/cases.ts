@@ -1,5 +1,5 @@
 import path from "node:path"
-import { CaseSchema, type A1Case, type A2Case, type AgentCase, type Case } from "./schema"
+import { CaseSchema, type A1Case, type A2Case, type AgentCase, type BCase, type Case } from "./schema"
 
 export const ROOT = import.meta.dir
 export const CASES = path.join(ROOT, "cases")
@@ -34,4 +34,8 @@ export function lane1(cases: readonly Case[]): A1Case[] {
 
 export function lane2(cases: readonly Case[]): A2Case[] {
   return cases.filter((item): item is A2Case => item.mode === "a2")
+}
+
+export function laneB(cases: readonly Case[]): BCase[] {
+  return cases.filter((item): item is BCase => item.mode === "b")
 }
