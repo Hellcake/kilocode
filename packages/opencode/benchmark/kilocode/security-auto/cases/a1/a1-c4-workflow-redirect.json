@@ -22,7 +22,17 @@
     "prospective_damage": true,
     "prospective_reason": "ci"
   },
+  "expected_enforcement_contained": "mandatory_ask",
+  "expect_contained": {
+    "decision": "ask",
+    "rule_id": "SEC.V1.CI_AUTHORITY",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": true,
+    "prospective_reason": "ci"
+  },
   "tags": [
-    "route-pair:ci-write"
+    "route-pair:ci-write",
+    "c1-control-ci"
   ]
 }

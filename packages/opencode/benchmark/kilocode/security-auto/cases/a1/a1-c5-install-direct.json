@@ -21,7 +21,16 @@
     "reviewer_called": false,
     "prospective_damage": false
   },
+  "expected_enforcement_contained": "mandatory_ask",
+  "expect_contained": {
+    "decision": "ask",
+    "rule_id": "SEC.V1.DEPENDENCY_INSTALL",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": false
+  },
   "tags": [
-    "route-pair:install"
+    "route-pair:install",
+    "c1-control-dependency"
   ]
 }

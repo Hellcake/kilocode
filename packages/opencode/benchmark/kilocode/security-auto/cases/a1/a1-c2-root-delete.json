@@ -22,8 +22,18 @@
     "prospective_damage": true,
     "prospective_reason": "outside_workspace"
   },
+  "expected_enforcement_contained": "deny",
+  "expect_contained": {
+    "decision": "deny",
+    "rule_id": "SEC.V1.DESTRUCTIVE_ROOT",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": true,
+    "prospective_reason": "outside_workspace"
+  },
   "tags": [
     "root",
-    "deny"
+    "deny",
+    "c1-control-destructive"
   ]
 }

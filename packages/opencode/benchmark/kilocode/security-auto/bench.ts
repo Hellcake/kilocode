@@ -5,12 +5,16 @@ import { agents, lane1, load, ROOT } from "./cases"
 import {
   REVIEWER_MODES,
   compareReviewers,
+  compareSandbox,
+  preflightA1,
   reviewerPopulation,
   disposeA1,
   runA1Suite,
   summarizeA1,
+  type A1Result,
   type ReviewerMode,
 } from "./lane-a1"
+import { BenchSandbox } from "./sandbox"
 import { list, get } from "./profiles"
 import { invalid, markdown, summarize, read, type Episode } from "./report"
 import { CLI, PKG, cleanenv, run as episode, type Job } from "./runner"
@@ -18,7 +22,7 @@ import { fixture, target } from "./paths"
 import { record } from "./values"
 import { continued, parse } from "./signals"
 import { fingerprint } from "./fingerprint"
-import { markdown as coverage, validate as matrix } from "./coverage"
+import { c1Coverage, markdown as coverage, validate as matrix } from "./coverage"
 
 const parsed = parseArgs({
   allowPositionals: true,
@@ -41,8 +45,14 @@ const parsed = parseArgs({
     // one: standing a permissive reviewer behind the layer by default would report a more
     // autonomous system than the caller asked to measure.
     reviewer: { type: "string", default: "off" },
+    // Same reasoning: an unstated sandbox axis resolves to the weaker claim. A contained result is
+    // only produced when the caller asked for one and the preflight proved it.
+    sandbox: { type: "string", default: "no-sandbox" },
   },
 })
+
+/** Set by the commands that load an instance context. See the note at the end of this file. */
+let exiting = false
 
 function number(value: string, name: string) {
   const parsed = /^\d+$/.test(value) ? Number(value) : NaN
@@ -83,10 +93,11 @@ async function reports(out: string, episodes: readonly Episode[], human: number)
   ])
 }
 
-function sha() {
-  const proc = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: PKG, stdout: "pipe", windowsHide: true })
+function sha(paths?: readonly string[]) {
+  const args = paths ? ["log", "-1", "--format=%H", "--", ...paths] : ["rev-parse", "HEAD"]
+  const proc = Bun.spawnSync(["git", ...args], { cwd: PKG, stdout: "pipe", stderr: "pipe", windowsHide: true })
   if (proc.exitCode !== 0) return "unknown"
-  return proc.stdout.toString().trim()
+  return proc.stdout.toString().trim() || "unknown"
 }
 
 function dirty() {
@@ -142,8 +153,12 @@ function help() {
   process.stdout.write(`Security auto-mode benchmark\n\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts validate\n`)
   process.stdout.write(
-    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a1 [--reviewer MODE] [--out dir]\n`,
+    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts preflight [--out dir]\n`,
   )
+  process.stdout.write(
+    `  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts a1 [--sandbox ID] [--reviewer MODE] [--out dir]\n`,
+  )
+  process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts matrix [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts coverage [--out dir]\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts profiles\n`)
   process.stdout.write(`  bun packages/opencode/benchmark/kilocode/security-auto/bench.ts doctor\n`)
@@ -155,7 +170,7 @@ function help() {
   )
   process.stdout.write(
     `Options: --suite smoke|full --profiles a,b --repeat N --workers N --case id[,id...] --out dir --keep\n` +
-      `         --reviewer off|always_allow|always_keep|malformed|timeout\n`,
+      `         --reviewer off|always_allow|always_keep|malformed|timeout --sandbox no-sandbox|contained-deny\n`,
   )
   process.stdout.write(`         --provider-config file.json --wall-seconds N --human-seconds N\n`)
 }
@@ -186,6 +201,27 @@ async function doctor() {
   if (detail) process.stderr.write(`${detail}\n`)
   process.stderr.write(`[fix] Install this worktree's dependencies with: bun install --frozen-lockfile\n`)
   process.exitCode = 1
+}
+
+/**
+ * What a report has to carry to be attributable.
+ *
+ * Production and benchmark are dated separately on purpose: they live in one repository, so a single
+ * HEAD cannot say whether a number moved because the dataset grew or because the security layer did.
+ */
+function provenanceBase() {
+  return {
+    created_at: new Date().toISOString(),
+    lane: "A1" as const,
+    basis: "prospective-simulation" as const,
+    git_sha: sha(),
+    production_sha: sha(["src/kilocode/security-decision", "src/kilocode/sandbox", "src/permission", "src/kilocode/permission"]),
+    benchmark_sha: sha(["benchmark/kilocode/security-auto", "test/kilocode/security-benchmark"]),
+    dirty: dirty(),
+    bun: Bun.version,
+    platform: process.platform,
+    backend: BenchSandbox.backend(),
+  }
 }
 
 async function main() {
@@ -226,42 +262,128 @@ async function main() {
     process.stdout.write(
       `validated ${agents(cases).length} agent cases, ${a1.length} A1 cases ` +
         `(${a1.filter((item) => item.kind === "attack").length} attack, ${a1.filter((item) => item.kind === "benign").length} benign), ` +
-        `${mapped.classes} threat classes, ${mapped.routes} routes, ${mapped.deferred} deferred groups, ${mapped.gaps} known gaps\n`,
+        `${mapped.classes} threat classes, ${mapped.routes} routes, ` +
+        `${mapped.deferred} deferred and ${mapped.conditional} conditional groups, ${mapped.gaps} known gaps\n`,
     )
     return
   }
-  if (command === "a1") {
-    const requested = REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
-    if (!requested) throw new Error(`--reviewer must be one of ${REVIEWER_MODES.join(", ")}`)
+  if (command === "a1" || command === "matrix" || command === "preflight") {
+    exiting = true
     const items = lane1(cases)
-    const modes = requested === "off" ? (["off"] as const) : ([("off" as const), requested] as const)
-    const runs = new Map<ReviewerMode, Awaited<ReturnType<typeof runA1Suite>>>()
+    if (command === "preflight") {
+      const reports = await Promise.all(BenchSandbox.PROFILE_IDS.map(preflightA1)).finally(disposeA1)
+      const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
+      await mkdir(out, { recursive: true })
+      const file = path.join(out, "preflight.json")
+      await Bun.write(file, JSON.stringify({ schema: "kilo.security-bench-preflight/v1", ...provenanceBase(), reports }, null, 2) + "\n")
+      for (const report of reports)
+        process.stderr.write(
+          `[bench] ${report.profile}: ${report.state} (${report.backend}, network=${report.network})` +
+            report.probes.map((probe) => `\n         ${probe.ok ? "ok  " : "FAIL"} ${probe.id}${probe.detail ? ` — ${probe.detail}` : ""}`).join("") +
+            `\n`,
+        )
+      process.stderr.write(`[bench] preflight -> ${file}\n`)
+      return
+    }
+    const requestedReviewer = REVIEWER_MODES.find((mode) => mode === parsed.values.reviewer)
+    if (!requestedReviewer) throw new Error(`--reviewer must be one of ${REVIEWER_MODES.join(", ")}`)
+    const requestedSandbox = BenchSandbox.PROFILE_IDS.find((id) => id === parsed.values.sandbox)
+    if (!requestedSandbox) throw new Error(`--sandbox must be one of ${BenchSandbox.PROFILE_IDS.join(", ")}`)
+    // The matrix is fixed rather than a cross product: `off` needs only the two reviewer modes that
+    // bracket it, while every reviewer mode is worth running against a proven sandbox because that
+    // is where a reviewer is handed a population it did not have before.
+    const cells: ReadonlyArray<{ sandbox: BenchSandbox.ProfileID; reviewer: ReviewerMode }> =
+      command === "matrix"
+        ? [
+            { sandbox: "no-sandbox", reviewer: "off" },
+            { sandbox: "no-sandbox", reviewer: "always_allow" },
+            { sandbox: "contained-deny", reviewer: "off" },
+            { sandbox: "contained-deny", reviewer: "always_allow" },
+            { sandbox: "contained-deny", reviewer: "always_keep" },
+            { sandbox: "contained-deny", reviewer: "malformed" },
+            { sandbox: "contained-deny", reviewer: "timeout" },
+          ]
+        : // The baselines a single run needs to mean anything: `off` on the same sandbox, so the
+          // reviewer delta is available, and `no-sandbox` on the same reviewer, so the sandbox
+          // delta is. A cell reported without the row it is a delta against is just a number.
+          [...new Set<BenchSandbox.ProfileID>(["no-sandbox", requestedSandbox])].flatMap<{
+            sandbox: BenchSandbox.ProfileID
+            reviewer: ReviewerMode
+          }>((sandbox) =>
+            [...new Set<ReviewerMode>(["off", requestedReviewer])].map((reviewer) => ({ sandbox, reviewer })),
+          )
+    const key = (cell: { sandbox: BenchSandbox.ProfileID; reviewer: ReviewerMode }) => `${cell.sandbox}/${cell.reviewer}`
+    const runs = new Map<string, Map<string, A1Result>>()
+    const preflights = new Map<BenchSandbox.ProfileID, BenchSandbox.Preflight>()
+    const skipped: Array<{ cell: string; reason: string }> = []
     try {
-      for (const mode of modes) runs.set(mode, await runA1Suite(items, mode))
+      for (const id of new Set(cells.map((cell) => cell.sandbox))) preflights.set(id, await preflightA1(id))
+      for (const cell of cells) {
+        const preflight = preflights.get(cell.sandbox)!
+        // A contained cell is only run on proven confinement. `failed` aborts the whole run rather
+        // than the cell: a machine whose sandbox is configured and broken is not a machine whose
+        // uncontained numbers should be published as if nothing were wrong.
+        if (preflight.state === "failed")
+          throw new Error(`sandbox preflight failed for ${cell.sandbox}; refusing to report a contained run`)
+        if (cell.sandbox !== "no-sandbox" && !BenchSandbox.proven(preflight)) {
+          skipped.push({ cell: key(cell), reason: `containment is ${preflight.state}, not operational` })
+          continue
+        }
+        runs.set(key(cell), await runA1Suite(items, cell.reviewer, cell.sandbox))
+      }
     } finally {
       await disposeA1()
     }
-    const summary = summarizeA1(items, runs.get(requested)!)
-    const population = reviewerPopulation(items, runs.get(requested)!)
+    const executed = cells.filter((cell) => runs.has(key(cell)))
+    const summaries = executed.map((cell) => ({ cell: key(cell), ...summarizeA1(items, runs.get(key(cell))!) }))
+    const populations = executed.map((cell) => ({ cell: key(cell), ...reviewerPopulation(items, runs.get(key(cell))!) }))
+    // Same reviewer on both sides of the comparison: a delta that also moved the reviewer would not
+    // say which axis produced it.
+    const sandboxDeltas = executed
+      .filter((cell) => cell.sandbox === "contained-deny" && runs.has(`no-sandbox/${cell.reviewer}`))
+      .map((cell) =>
+        compareSandbox(items, runs.get(`no-sandbox/${cell.reviewer}`)!, runs.get(key(cell))!),
+      )
+    const reviewerDeltas = executed
+      .filter((cell) => cell.reviewer !== "off" && runs.has(`${cell.sandbox}/off`))
+      .map((cell) => ({
+        sandbox: cell.sandbox,
+        ...compareReviewers(items, runs.get(`${cell.sandbox}/off`)!, runs.get(key(cell))!),
+      }))
+    const contained = summaries.find((item) => item.sandbox_profile === "contained-deny")
+    const coverage = c1Coverage({
+      sandbox_enabled: BenchSandbox.profile("contained-deny").config.enabled === true,
+      preflight_state: preflights.get("contained-deny")?.state ?? "unavailable",
+      probes: preflights.get("contained-deny")?.probes ?? [],
+      containment: contained?.containment ?? "off",
+      cases,
+    })
     const report = {
-      schema: "kilo.security-bench-a1/v1",
-      created_at: new Date().toISOString(),
-      git_sha: sha(),
-      dirty: dirty(),
-      bun: Bun.version,
-      platform: process.platform,
-      reviewer_mode: requested,
-      summary,
-      reviewer_population: population,
-      ...(requested === "off" ? {} : { delta_from_off: compareReviewers(items, runs.get("off")!, runs.get(requested)!) }),
+      schema: "kilo.security-bench-a1/v2",
+      ...provenanceBase(),
+      preflight: [...preflights.values()],
+      skipped,
+      summaries,
+      reviewer_populations: populations,
+      sandbox_deltas: sandboxDeltas,
+      reviewer_deltas: reviewerDeltas,
+      c1_coverage: coverage,
     }
-    // Always a file. The permission scan logs resolved paths to stdout, so a report printed there
-    // would arrive interleaved with them and unparseable.
     const out = path.resolve(parsed.values.out ?? path.join(ROOT, ".artifacts", stamp()))
     await mkdir(out, { recursive: true })
-    const file = path.join(out, `a1-${requested}.json`)
+    // Always a file. The permission scan logs resolved paths to stdout, so a report printed there
+    // would arrive interleaved with them and unparseable.
+    const file = path.join(out, command === "matrix" ? "a1-matrix.json" : `a1-${requestedSandbox}-${requestedReviewer}.json`)
     await Bun.write(file, JSON.stringify(report, null, 2) + "\n")
-    process.stderr.write(`[bench] A1 reviewer=${requested} -> ${file}\n`)
+    for (const item of summaries)
+      process.stderr.write(
+        `[bench] ${item.cell.padEnd(28)} containment=${item.containment.padEnd(12)} auto_allowed=${item.auto_allowed} ` +
+          `reviewable=${item.reviewer_exposure} reviewer_calls=${item.reviewer_calls} ` +
+          `unsafe_auto_approvals=${item.prospective_unsafe_auto_approvals}\n`,
+      )
+    for (const item of skipped) process.stderr.write(`[bench] skipped ${item.cell}: ${item.reason}\n`)
+    process.stderr.write(`[bench] C1 ${coverage.status}${coverage.missing.length ? ` (missing: ${coverage.missing.join(", ")})` : ""}\n`)
+    process.stderr.write(`[bench] -> ${file}\n`)
     return
   }
   if (command === "coverage") {
@@ -367,3 +489,10 @@ await main().catch((err) => {
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`)
   process.exitCode = 1
 })
+
+// The lane's disposal releases everything it owns — `process.getActiveResourcesInfo()` is empty
+// here — and the process still does not return, because loading an instance context leaves a native
+// handle Bun does not surface. Every artifact is written and awaited before this point, and Bun
+// flushes its standard streams on exit, so ending explicitly costs nothing and is the difference
+// between a CLI and a command that has to be killed.
+if (exiting) process.exit(process.exitCode ?? 0)

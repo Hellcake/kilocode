@@ -1,4 +1,4 @@
-import type { Case } from "./schema"
+import type { A1Case, Case } from "./schema"
 
 /**
  * The coverage matrix over the frozen threat model.
@@ -24,15 +24,34 @@ export type Group = Readonly<{
   deferred?: string
   /** Cases in this group where the engine is weaker than the frozen threat model wants. */
   gaps?: readonly string[]
+  /** Evidence that exists in the dataset but only counts on a run that met a runtime condition. */
+  conditional?: string
 }>
 
 export const classes: readonly Group[] = [
   {
     id: "C1",
     title: "Contained execution remains an ask, optionally reviewable",
-    cases: [],
-    deferred:
-      "Blocks 3 and 4: with no operational containment probe every A1 case is decided against sandbox:off, so CONTAINED_EXEC is unreachable and nothing here could be evidence",
+    cases: [
+      "a1-c1-contained-unit-tests",
+      "a1-c1-contained-typecheck",
+      "a1-c1-contained-lint-fix",
+      "a1-c1-contained-prefixed-test",
+      "a1-c1-contained-sequenced-build",
+      "a1-c1-contained-label-build",
+      "a1-c7-host-daemon",
+      "a1-c5-install-direct",
+      "a1-c4-workflow-redirect",
+      "a1-c3-hook-redirect",
+      "a1-c6-secret-read-direct",
+      "a1-c6-outside-workspace-write",
+      "a1-c2-root-delete",
+    ],
+    // The dataset alone is not the claim. C1 is only covered on a run whose preflight proved the
+    // backend operational, which is a property of the machine and not of these files, so the
+    // condition is evaluated per run by `c1Coverage` and reported with the result.
+    conditional:
+      "covered only on a run whose sandbox preflight proved the backend operational; otherwise partial (see c1Coverage)",
   },
   {
     id: "C2",
@@ -254,6 +273,79 @@ export const invariants: readonly Group[] = [
   },
 ]
 
+/** The protected boundaries a contained run must be shown *not* to weaken. */
+export const C1_CONTROL_RULES = [
+  "SEC.V1.HOST_CONTROL",
+  "SEC.V1.DEPENDENCY_INSTALL",
+  "SEC.V1.CI_AUTHORITY",
+  "SEC.V1.GIT_HOOK_WRITE",
+  "SEC.V1.SENSITIVE_BOUNDARY",
+  "SEC.V1.DESTRUCTIVE_ROOT",
+] as const
+
+export type C1Coverage = Readonly<{
+  status: "covered" | "partial"
+  conditions: Readonly<Record<string, boolean>>
+  missing: readonly string[]
+  positives: readonly string[]
+  controls: readonly string[]
+  uncovered_control_rules: readonly string[]
+}>
+
+/**
+ * Whether C1 is actually covered by this run, rather than merely referenced by the matrix.
+ *
+ * Five things have to hold at once, and only two of them are properties of the dataset. The other
+ * three are properties of the machine and of the path the facts came from, which is why this is a
+ * per-run function rather than a static row: a C1 claim on a host where the backend never confined
+ * anything would be the benchmark asserting the feature it was built to measure.
+ *
+ * `containment` is the state the production path reported for the run. Nothing in the harness can
+ * produce `operational` — only `ContainmentMacos.probe` can — so its presence here *is* the evidence
+ * that the facts travelled the production path.
+ */
+export function c1Coverage(input: {
+  sandbox_enabled: boolean
+  preflight_state: "off" | "operational" | "unavailable" | "failed"
+  probes: readonly { id: string; ok: boolean }[]
+  containment: string
+  cases: readonly Case[]
+}): C1Coverage {
+  const a1 = input.cases.filter((item): item is A1Case => item.mode === "a1" && item.expect_contained !== undefined)
+  const positives = a1.filter(
+    (item) =>
+      item.expect_contained!.rule_id === "SEC.V1.CONTAINED_EXEC" &&
+      item.expect.rule_id !== "SEC.V1.CONTAINED_EXEC" &&
+      item.expected_enforcement === "mandatory_ask",
+  )
+  const controls = a1.filter(
+    (item) =>
+      item.expect_contained!.rule_id !== "SEC.V1.CONTAINED_EXEC" &&
+      item.expect_contained!.rule_id === item.expect.rule_id &&
+      item.expected_enforcement_contained === item.expected_enforcement,
+  )
+  const covered = new Set(controls.map((item) => item.expect_contained!.rule_id))
+  const uncovered = C1_CONTROL_RULES.filter((rule) => !covered.has(rule))
+  const conditions = {
+    sandbox_enabled_by_real_config: input.sandbox_enabled,
+    backend_operational_proof: input.preflight_state === "operational" && input.probes.every((probe) => probe.ok),
+    containment_from_production_path: input.containment === "operational",
+    positive_autonomy_cases: positives.length > 0,
+    negative_protected_boundary_controls: uncovered.length === 0,
+  }
+  const missing = Object.entries(conditions)
+    .filter(([, ok]) => !ok)
+    .map(([name]) => name)
+  return {
+    status: missing.length === 0 ? "covered" : "partial",
+    conditions,
+    missing,
+    positives: positives.map((item) => item.id),
+    controls: controls.map((item) => item.id),
+    uncovered_control_rules: uncovered,
+  }
+}
+
 export function validate(cases: readonly Case[]) {
   const ids = new Set(cases.map((item) => item.id))
   const groups = [...classes, ...routes, ...invariants]
@@ -261,7 +353,7 @@ export function validate(cases: readonly Case[]) {
   if (missing.length > 0) throw new Error(`coverage references missing cases: ${missing.join(", ")}`)
   // A group may be empty, but only on the record. Silence is what turns a hole into a claim.
   const unexplained = groups.filter(
-    (group) => group.cases.length === 0 && (group.tests?.length ?? 0) === 0 && !group.deferred,
+    (group) => group.cases.length === 0 && (group.tests?.length ?? 0) === 0 && !group.deferred && !group.conditional,
   )
   if (unexplained.length > 0)
     throw new Error(`groups without evidence must declare why: ${unexplained.map((item) => item.id).join(", ")}`)
@@ -278,6 +370,7 @@ export function validate(cases: readonly Case[]) {
     routes: routes.length,
     invariants: invariants.length,
     deferred: groups.filter((group) => group.deferred).length,
+    conditional: groups.filter((group) => group.conditional).length,
     gaps: gaps.length,
   }
 }
@@ -287,12 +380,13 @@ export function markdown(cases: readonly Case[]) {
   const section = (title: string, groups: readonly Group[]) => [
     `## ${title}`,
     "",
-    "| ID | Meaning | Evidence | Known gaps | Deferred |",
+    "| ID | Meaning | Evidence | Known gaps | Deferred or conditional |",
     "|---|---|---|---|---|",
     ...groups.map((group) => {
       const evidence = [...group.cases.map((id) => `\`${id}\``), ...(group.tests ?? []).map((id) => `test: ${id}`)]
       const gaps = (group.gaps ?? []).map((id) => `\`${id}\``).join(", ")
-      return `| ${group.id} | ${group.title} | ${evidence.join(", ") || "—"} | ${gaps || "—"} | ${group.deferred ?? ""} |`
+      const note = group.deferred ?? (group.conditional ? `conditional: ${group.conditional}` : "")
+      return `| ${group.id} | ${group.title} | ${evidence.join(", ") || "—"} | ${gaps || "—"} | ${note} |`
     }),
     "",
   ]
@@ -300,8 +394,11 @@ export function markdown(cases: readonly Case[]) {
     "# Security benchmark coverage (v2 baseline)",
     "",
     "Generated from checked-in benchmark metadata. A row with a **Deferred** note is an open hole in the",
-    "matrix, not a passing security claim and not a known-safe behavior. A **Known gap** is a case where",
-    "the engine is weaker than the frozen threat model wants; it is recorded, never counted as a pass.",
+    "matrix, not a passing security claim and not a known-safe behavior. A **conditional** row has the",
+    "cases but not automatically the claim: its evidence only counts on a run that met the stated",
+    "runtime condition, which for C1 is a sandbox preflight that proved the backend operational.",
+    "A **Known gap** is a case where the engine is weaker than the frozen threat model wants; it is",
+    "recorded, never counted as a pass.",
     "",
     "All `a1-*` evidence is decision-level: Lane A1 scans a real command and never executes it, so it",
     "establishes what the layer decides and what the action *would* have touched, not a final effect.",

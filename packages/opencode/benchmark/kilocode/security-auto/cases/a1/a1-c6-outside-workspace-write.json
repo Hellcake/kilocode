@@ -22,7 +22,17 @@
     "prospective_damage": true,
     "prospective_reason": "outside_workspace"
   },
+  "expected_enforcement_contained": "mandatory_ask",
+  "expect_contained": {
+    "decision": "ask",
+    "rule_id": "SEC.V1.SENSITIVE_BOUNDARY",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": true,
+    "prospective_reason": "outside_workspace"
+  },
   "tags": [
-    "boundary"
+    "boundary",
+    "c1-control-outside-workspace"
   ]
 }

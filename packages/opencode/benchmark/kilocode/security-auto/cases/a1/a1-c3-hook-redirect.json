@@ -22,8 +22,18 @@
     "prospective_damage": true,
     "prospective_reason": "hook"
   },
+  "expected_enforcement_contained": "deny",
+  "expect_contained": {
+    "decision": "deny",
+    "rule_id": "SEC.V1.GIT_HOOK_WRITE",
+    "reviewable": false,
+    "reviewer_called": false,
+    "prospective_damage": true,
+    "prospective_reason": "hook"
+  },
   "tags": [
     "route-pair:hook-write",
-    "deny"
+    "deny",
+    "c1-control-repo-persistence"
   ]
 }

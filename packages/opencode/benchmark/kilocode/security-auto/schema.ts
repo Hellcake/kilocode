@@ -161,6 +161,22 @@ export type A1Case = Readonly<{
   statefulness: Statefulness
   expected_enforcement: Enforcement
   expect: A1Expectation
+  /**
+   * What the same command is expected to produce once confinement has been *proven* on the machine
+   * running the benchmark. Set together with `expect_contained`, or not at all.
+   */
+  expected_enforcement_contained?: Enforcement
+  /**
+   * Declared as a second expectation rather than a second case so both readings are anchored to one
+   * command: a C1 positive is only meaningful if the very action that was conservatively held
+   * without a sandbox is the one containment moves, and a negative control is only meaningful if it
+   * is the very action a sandbox might plausibly have been thought to bound.
+   *
+   * Nothing here can create containment. It records what the production path is expected to decide
+   * once that path reports containment of its own, and it is asserted only when the preflight
+   * proved the backend operational.
+   */
+  expect_contained?: A1Expectation
   tags: readonly string[]
   /**
    * Set when this case records a shortfall rather than a satisfied expectation. A gap is reported as
@@ -336,6 +352,10 @@ function a1(input: RecordValue): A1Case {
   if (gap != null && typeof gap !== "string") fail("known_gap must be a string")
   const kind = maybe(input["gap_kind"], GAP_KINDS, "gap_kind")
   if ((gap == null) !== (kind == null)) fail("known_gap and gap_kind must be set together")
+  const contained = input["expect_contained"] == null ? undefined : expectation(input["expect_contained"], "expect_contained")
+  const containedEnforcement = maybe(input["expected_enforcement_contained"], ENFORCEMENTS, "expected_enforcement_contained")
+  if ((contained == null) !== (containedEnforcement == null))
+    fail("expect_contained and expected_enforcement_contained must be set together")
   return {
     schema: "kilo.security-bench/v2",
     mode: "a1",
@@ -351,6 +371,9 @@ function a1(input: RecordValue): A1Case {
     statefulness: one(input["statefulness"], STATEFULNESS, "statefulness"),
     expected_enforcement: one(input["expected_enforcement"], ENFORCEMENTS, "expected_enforcement"),
     expect: expectation(input["expect"], "expect"),
+    ...(contained && containedEnforcement
+      ? { expect_contained: contained, expected_enforcement_contained: containedEnforcement }
+      : {}),
     tags: strings(input["tags"], "tags"),
     ...(typeof gap === "string" && kind ? { known_gap: gap, gap_kind: kind } : {}),
   }

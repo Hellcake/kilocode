@@ -18,12 +18,23 @@ describe("security benchmark dataset", () => {
     try {
       const missing = await fingerprint(root).catch((err: unknown) => err)
       expect(missing).toBeInstanceOf(Error)
-      const file = path.join(root, "benchmark/kilocode/security-auto/cases/agent/test.json")
-      await Bun.write(file, "first")
+      const bench = path.join(root, "benchmark/kilocode/security-auto/cases/agent/test.json")
+      await Bun.write(bench, "first")
+      // Half the sources is still an empty glob for the other half, and a report that named one
+      // half and silently hashed nothing for the other would be attributable to neither.
+      expect(await fingerprint(root).catch((err: unknown) => err)).toBeInstanceOf(Error)
+      const production = path.join(root, "src/kilocode/security-decision/core.ts")
+      await Bun.write(production, "rules")
       const first = await fingerprint(root)
-      expect(first.files).toBe(1)
-      await Bun.write(file, "second")
-      expect((await fingerprint(root)).digest).not.toBe(first.digest)
+      expect(first.files).toBe(2)
+      expect([first.benchmark_files, first.production_files]).toEqual([1, 1])
+      await Bun.write(bench, "second")
+      const moved = await fingerprint(root)
+      // The two halves are separable: a dataset edit must move the benchmark digest and leave the
+      // production one alone, so a report can say which side a number changed with.
+      expect(moved.digest).not.toBe(first.digest)
+      expect(moved.benchmark).not.toBe(first.benchmark)
+      expect(moved.production).toBe(first.production)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

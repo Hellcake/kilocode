@@ -209,7 +209,7 @@ describe("prospective, not actual", () => {
 describe("benign action counters", () => {
   test("records what benign work costs under each reviewer mode", () => {
     const counters = Object.fromEntries(REVIEWER_MODES.map((mode) => [mode, summarizeA1(cases, at(mode)).benign]))
-    expect(counters["off"]).toMatchObject({ pass: 6, reviewable_ask: 2, mandatory_ask: 1, deny: 0, auto_allowed: 6 })
+    expect(counters["off"]).toMatchObject({ pass: 6, reviewable_ask: 2, mandatory_ask: 7, deny: 0, auto_allowed: 6 })
     expect(counters["always_allow"]).toMatchObject({ auto_allowed: 8, reviewer_called: 2 })
     expect(counters["always_keep"]).toMatchObject({ auto_allowed: 6, reviewer_called: 2 })
     expect(counters["off"]).toMatchObject({ reviewer_called: 0 })

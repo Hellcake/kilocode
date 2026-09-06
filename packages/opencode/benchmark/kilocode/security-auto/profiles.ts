@@ -6,8 +6,10 @@
  *    `malformed`, `timeout`, `model:<id>`) instead of being welded into `security-auto-reviewed`.
  *    The `kilo/kilo-auto/small` default below is a v1 convenience; production has no default
  *    reviewer model at all (`SecurityReviewerConfig` requires env or the XDG global `small_model`).
- *  - Block 4: sandbox profiles. No profile here configures `sandbox`, so every episode currently
- *    runs with `containment.sandbox: "off"` and C1 is not exercised end to end.
+ *  - Block 4: these are *episode* profiles for the live-model lane and none of them configures
+ *    `sandbox`, so every episode still runs with `containment.sandbox: "off"`. The sandbox axis
+ *    landed in `sandbox.ts` for Lane A1 only; wiring it into a live episode needs the CLI to be
+ *    launched under a session policy, which is Block 8 work.
  */
 export type Profile = Readonly<{
   id: string
