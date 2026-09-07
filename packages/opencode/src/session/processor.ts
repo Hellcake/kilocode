@@ -322,7 +322,7 @@ const layer = Layer.effect(
           // spellings of the same intent: both end the turn.
           ctx.blocked ||= security !== "continue"
         } else if (
-          error instanceof PermissionV1.RejectedError ||
+          (error instanceof PermissionV1.RejectedError && !(yield* session.get(ctx.sessionID)).parentID) ||
           error instanceof Question.RejectedError ||
           error instanceof Suggestion.DismissedError
         ) {

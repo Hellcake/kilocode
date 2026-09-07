@@ -70,6 +70,7 @@ import {
   securityKind,
   stateMetadata,
 } from "../../kilocode/tool-approval" // kilocode_change
+import { BoardTool } from "../../kilocode/board-tool" // kilocode_change
 import { useEpilogue } from "../../context/epilogue"
 import { normalizePath } from "../../util/path"
 import { PermissionPrompt } from "./permission"
@@ -1966,6 +1967,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
           <Grep {...toolprops} />
         </Match>
         {/* kilocode_change start - preserve Kilo tool-specific status rendering */}
+        <Match when={display() === "board_post" || display() === "board_read"}>
+          <BoardTool part={props.part} block={BlockTool} conceal={ctx.conceal()} />
+        </Match>
         <Match when={display() === "background_process"}>
           <BackgroundProcess {...toolprops} />
         </Match>
@@ -2350,6 +2354,7 @@ export function InlineToolRow(props: {
   )
 }
 
+export { BlockTool } // kilocode_change
 function BlockTool(props: {
   title?: string
   children: JSX.Element
@@ -3082,6 +3087,8 @@ const toolDisplays = new Set([
   "question",
   "skill",
   // kilocode_change start - retain dedicated Kilo tool renderers
+  "board_post",
+  "board_read",
   "execute",
   "background_process",
   "interactive_terminal",
