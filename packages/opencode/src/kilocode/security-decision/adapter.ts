@@ -242,7 +242,10 @@ export namespace SecurityDecisionAdapter {
     // Manifest names are matched exactly (`Cargo.toml`); credential and key names are matched
     // case-folded, because those are the ones a spelling change is used to slip past.
     const lower = base.toLowerCase()
-    if (/(^|\/)\.git\/hooks(\/|$)/i.test(target)) return "git_hook"
+    // A submodule hook is executable Git control plane just like the top-level hook directory.
+    // Submodule names may contain path separators, so match the hook directory after the complete
+    // `.git/modules/**` storage path instead of assuming one name segment.
+    if (/(^|\/)\.git\/(?:hooks|modules\/.+\/hooks)(\/|$)/i.test(target)) return "git_hook"
     // Control plane: hook redirection, filter drivers and direnv all install code that later runs.
     // `.husky` and `.githooks` are where `core.hooksPath` points in a modern repository: a write
     // there installs a hook just as a write to `.git/hooks` does. They ask rather than deny, because

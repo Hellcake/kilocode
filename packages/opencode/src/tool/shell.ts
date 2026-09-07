@@ -64,6 +64,7 @@ const FILES = new Set([
   "nl",
   "stat",
   "file",
+  "ls",
   "diff",
   // kilocode_change end
   // Leave PowerShell aliases out for now. Common ones like cat/cp/mv/rm/mkdir
@@ -79,7 +80,7 @@ const FILES = new Set([
   "rename-item",
 ])
 // kilocode_change start
-const READ = new Set(["cat", "get-content", "head", "tail", "wc", "nl", "stat", "file", "diff"])
+const READ = new Set(["cat", "get-content", "head", "tail", "wc", "nl", "stat", "file", "ls", "diff"])
 // kilocode_change end
 const CMD_FILES = new Set([
   "copy",
