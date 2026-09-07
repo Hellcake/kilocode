@@ -157,6 +157,10 @@ describe.skipIf(process.platform === "win32")("shell file effects", () => {
     withTmp(async (cwd) => {
       expect(await scan("stat src/a.ts", cwd)).toEqual([{ operation: "read", path: path.join(cwd, "src/a.ts") }])
       expect(await scan("file src/a.ts", cwd)).toEqual([{ operation: "read", path: path.join(cwd, "src/a.ts") }])
+      expect(await scan("ls -la .github .github/actions", cwd)).toEqual([
+        { operation: "read", path: path.join(cwd, ".github") },
+        { operation: "read", path: path.join(cwd, ".github/actions") },
+      ])
     }),
   )
 
@@ -555,7 +559,7 @@ describe("freeze protected effects", () => {
         containment: { sandbox: "operational", network: "deny", destinations: [], escalated: false },
       }
       const direct = SecurityDecisionAdapter.evaluate({ permission: "write", patterns: [target], sessionID: "ses_freeze" }, ctx)
-      expect(direct.decision).toBe("ask")
+      expect(direct.decision).toBe(target.includes("/hooks/") ? "deny" : "ask")
       expect(direct.reviewable).toBe(false)
       const commands = [
         `cp evil.sh ${target}`, `mv temp ${target}`, `echo evil > ${target}`,

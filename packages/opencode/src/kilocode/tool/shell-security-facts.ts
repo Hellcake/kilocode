@@ -164,7 +164,10 @@ function unit(node: Node, posix: boolean, environment: boolean): ShellCommandFac
   return {
     ...(name ? { executable: name } : {}),
     argv: argv(node),
-    classified: name !== undefined && commandOperation(name) !== undefined,
+    // The effect table describes the standard program resolved by a bare name. A path-selected
+    // executable or a rewritten environment may resolve to different code with the same basename;
+    // keep its visible file effects, but do not treat the executable itself as classified.
+    classified: name !== undefined && commandOperation(name) !== undefined && !canonical?.pathed && !assigns,
     ambient: ENVIRONMENT.has(name ?? "") || present(node, ["simple_expansion", "expansion", "arithmetic_expansion"]),
     ...(canonical?.pathed ? { pathed: true } : {}),
     ...(assigns ? { assigns: true } : {}),
@@ -230,6 +233,7 @@ const OPERATIONS: Record<string, ShellOperation> = {
   nl: "read",
   stat: "read",
   file: "read",
+  ls: "read",
   diff: "read",
   rm: "delete",
   "remove-item": "delete",

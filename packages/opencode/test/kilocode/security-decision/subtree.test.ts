@@ -180,6 +180,10 @@ describe("what ancestor inheritance must not do", () => {
         expect([command, result.decision]).toEqual([command, "pass"])
         expect([command, result.damage.damaging]).toEqual([command, false])
       }
+
+      const redirected = await decide("ls -la .github .github/actions 2>/dev/null || true", cwd)
+      expect(redirected.decision).toBe("pass")
+      expect(redirected.rule).toBe("SEC.V1.NO_OPINION")
     }),
   )
 

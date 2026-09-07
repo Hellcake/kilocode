@@ -493,7 +493,16 @@ describe("credential files and hook directories", () => {
     expect(decide("read", ".husky/pre-commit").rule_id).toBe("SEC.V1.NO_OPINION")
   })
 
-  test("a real git hook still denies", () => {
-    expect(decide("write", ".git/hooks/pre-commit").decision).toBe("deny")
+  test.each([
+    [".git/hooks/pre-commit"],
+    [".git/modules/demo/hooks/pre-commit"],
+    ["./tmp/../.git/modules/demo/hooks/pre-commit"],
+  ])("writing the executable git hook %s denies", (file) => {
+    const out = decide("write", file)
+    expect({ rule: out.rule_id, decision: out.decision, reviewable: out.reviewable }).toEqual({
+      rule: "SEC.V1.GIT_HOOK_WRITE",
+      decision: "deny",
+      reviewable: false,
+    })
   })
 })
